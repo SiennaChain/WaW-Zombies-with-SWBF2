@@ -1,0 +1,17 @@
+; Copy to wawbf.ini next to d3d9.dll in the Call of Duty World at War folder
+; (the one with CoDWaW.exe). Comments start with ';'.
+
+[bridge]
+tick_hz = 60
+
+[waw]
+; Where CoDWaW.exe keeps the local player's position (3 floats, feet,
+; WaW units) and view angles (3 floats: pitch, yaw, roll in degrees).
+; Formats: CoDWaW.exe+0x123456 | 0x00ABCDEF | CoDWaW.exe+0x1234 > 0x10 > 0x2C
+; Not found yet - see docs/PHASE0.md, step 4.
+player_origin =
+view_angles =
+
+[proxy]
+; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.
+chain =

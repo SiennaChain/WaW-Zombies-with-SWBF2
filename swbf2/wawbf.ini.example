@@ -1,0 +1,28 @@
+; Copy to wawbf.ini next to d3d9.dll in Star Wars Battlefront II\GameData
+; (the folder with BattlefrontII.exe). Comments start with ';'.
+
+[bridge]
+tick_hz = 60
+
+[swbf2]
+; Where BattlefrontII.exe keeps the player unit's position (3 floats).
+; Formats: BattlefrontII.exe+0x123456 | 0x00ABCDEF | BattlefrontII.exe+0x1234 > 0x10 > 0x2C
+; Not found yet - see docs/PHASE0.md, step 4.
+player_position =
+; 1 = move the BF unit to wherever the WaW player is (Phase 0 exit test).
+follow = 0
+
+[mapping]
+; How WaW space maps onto BF space - see protocol/wawbf_protocol.h.
+; anchor_waw (WaW units) lands on anchor_bf (BF units).
+anchor_waw = 0, 0, 0
+anchor_bf = 0, 0, 0
+; BF units per WaW unit. 0.0254 assumes BF uses metres and WaW inches.
+scale = 0.0254
+; -1 if SWBF2 is right-handed, 1 if left-handed. Unverified: PHASE0.md step 6.
+z_sign = -1
+yaw_sign = 1
+yaw_offset = 0
+
+[proxy]
+chain =
