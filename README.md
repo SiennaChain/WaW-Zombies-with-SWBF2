@@ -31,8 +31,8 @@ docs/       DESIGN.md (architecture and phases), PHASE0.md (current checklist)
 
 ## Building
 
-Windows, Visual Studio 2022, CMake 3.20+. Both games are 32-bit, so build
-32-bit:
+Windows, Visual Studio 2022 or later, CMake 3.20+. Both games are 32-bit, so
+build 32-bit:
 
 ```bat
 cmake -B build -A Win32

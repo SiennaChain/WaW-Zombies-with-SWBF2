@@ -30,7 +30,9 @@ if(WIN32)
     target_link_options(wawbf_common INTERFACE -static -Wl,--enable-stdcall-fixup)
   endif()
 
-  # One d3d9.dll proxy per game, each in its own output folder.
+  # One d3d9.dll proxy per game, each in its own output folder. The $<1:...>
+  # wrapper stops Visual Studio generators appending a per-config subfolder,
+  # so outputs land where docs/PHASE0.md says for every generator.
   function(wawbf_bridge target game_dir)
     add_library(${target} SHARED
       ${game_dir}/src/main.cpp
@@ -40,8 +42,8 @@ if(WIN32)
     set_target_properties(${target} PROPERTIES
       OUTPUT_NAME d3d9
       PREFIX ""
-      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out/${game_dir}
-      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out/${game_dir})
+      RUNTIME_OUTPUT_DIRECTORY $<1:${CMAKE_BINARY_DIR}/out/${game_dir}>
+      LIBRARY_OUTPUT_DIRECTORY $<1:${CMAKE_BINARY_DIR}/out/${game_dir}>)
   endfunction()
 
   wawbf_bridge(wawbf_waw waw)
@@ -54,7 +56,7 @@ if(WIN32)
     target_link_options(wawbf_monitor PRIVATE -static)
   endif()
   set_target_properties(wawbf_monitor PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out/tools)
+    RUNTIME_OUTPUT_DIRECTORY $<1:${CMAKE_BINARY_DIR}/out/tools>)
 endif()
 
 if(WAWBF_BUILD_TESTS)

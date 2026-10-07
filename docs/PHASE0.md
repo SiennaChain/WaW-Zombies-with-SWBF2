@@ -6,9 +6,18 @@ World at War moves your Battlefront II unit to match.
 
 Everything here is on Windows, with the latest Steam versions of both games.
 
+Builds tested so far (addresses found in step 4 only hold for these; if a
+hash changes, a Steam update replaced the exe):
+
+| Exe | Linked | SHA-256 |
+|---|---|---|
+| `CoDWaW.exe` 1.7 | 2009-10-29 | `732900D158982C33E3121F0B86D22230BE79839BBCBFE3BDFC1238F408A7D64D` |
+| `BattlefrontII.exe` | 2017-10-23 | `3BFDB0931885DE776126957AA4883B691FC391B58126FF639E36592309D75E90` |
+
 ## 1. Build
 
-Needs Visual Studio 2022 (Desktop C++ workload) and CMake 3.20+.
+Needs Visual Studio 2022 or later (Desktop C++ workload, which includes
+CMake). Run these from a *Developer Command Prompt for VS*:
 
 ```bat
 cmake -B build -A Win32
@@ -46,8 +55,15 @@ If `d3d9.dll` isn't listed, the proxy needs to impersonate something else
 the game does import (`dinput8.dll` is the usual choice). Note the result
 here either way.
 
-- [ ] WaW loads the bridge
-- [ ] SWBF2 loads the bridge
+Result (2026-10-07): both exes import `d3d9.dll` and both load the bridge.
+`BattlefrontII.exe` also imports `dinput8.dll`, which is a second way in if
+we need one for input later.
+
+Start both games from Steam. Running `CoDWaW.exe` directly makes it exit and
+ask Steam to relaunch it, which did not always come back.
+
+- [x] WaW loads the bridge
+- [x] SWBF2 loads the bridge
 
 ## 3. Run both and check the link
 
@@ -59,8 +75,12 @@ SWBF2, use its video options or a windowed launch option. Start
 The monitor should show both PIDs as `alive`. Close one game; within two
 seconds it should show `STALE`.
 
-- [ ] Both sides `alive` in the monitor
-- [ ] Closing a game shows `STALE`
+Result (2026-10-07), read from the two logs rather than the monitor: with
+both games at their menus each bridge logged the other as connected, and WaW
+logged `SWBF2 bridge lost` a few seconds after SWBF2 closed.
+
+- [x] Both sides `alive` in the monitor
+- [x] Closing a game shows `STALE`
 
 **Does SWBF2 keep running without focus?** Start an instant action match,
 then click into the WaW window. Watch the SWBF2 window: do bots and effects
