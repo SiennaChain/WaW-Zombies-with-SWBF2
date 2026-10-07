@@ -112,6 +112,30 @@ time. Do this offline and single player only.
 7. View angles are found the same way: look up and down for pitch, turn for
    yaw (degrees).
 
+Result (2026-10-07, exe build listed at the top):
+
+```ini
+player_origin = CoDWaW.exe+0x14ED088
+view_angles = CoDWaW.exe+0x14ED18C
+```
+
+These were found with a script rather than by hand (`tools/probe/`).
+`wawbf_probe.gsc`, called from a copy of `maps/_zombiemode_weapons.gsc` in a
+throwaway mod, freezes the controls and teleports the player between known
+spots; `wawscan.ps1` keeps the addresses that hold those numbers every time,
+and `wawwatch.ps1` times which copy changes first.
+
+About 50 copies tracked the player. This pair changed before all the others
+on a teleport and sits in one structure (angles 0x104 after the origin), so it
+is the game's own record of the player rather than a client-side copy. It
+survives a restart: with these in `wawbf.ini` the bridge logged the scripted
+positions and yaws exactly.
+
+Not measured yet: how often it updates. It is probably the server's tick rate
+rather than every rendered frame. If the follow test looks steppy,
+`CoDWaW.exe+0x214776C` changed one frame later and is the first client-side
+copy to try.
+
 ### Battlefront II: `[swbf2] player_position`
 
 Same method on `BattlefrontII.exe` in an instant action match. Height
@@ -125,8 +149,8 @@ right address. If the game keeps overwriting it, it's a copy.
 Put each value in the relevant `wawbf.ini`, restart, and confirm the monitor
 shows valid positions that change as you move.
 
-- [ ] `player_origin` found (record the WaW address here)
-- [ ] `view_angles` found
+- [x] `player_origin` found (record the WaW address here)
+- [x] `view_angles` found
 - [ ] `player_position` found and freezing it pins the unit
 
 ## 5. Follow test

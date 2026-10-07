@@ -8,9 +8,10 @@ tick_hz = 60
 ; Where CoDWaW.exe keeps the local player's position (3 floats, feet,
 ; WaW units) and view angles (3 floats: pitch, yaw, roll in degrees).
 ; Formats: CoDWaW.exe+0x123456 | 0x00ABCDEF | CoDWaW.exe+0x1234 > 0x10 > 0x2C
-; Not found yet - see docs/PHASE0.md, step 4.
-player_origin =
-view_angles =
+; Found for the Steam 1.7 exe listed in docs/PHASE0.md (step 4); a different
+; exe build needs them found again.
+player_origin = CoDWaW.exe+0x14ED088
+view_angles = CoDWaW.exe+0x14ED18C
 
 [proxy]
 ; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.

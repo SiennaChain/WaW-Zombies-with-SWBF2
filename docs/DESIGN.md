@@ -114,6 +114,30 @@ it into damage (`MagicBullet` / trace). Ammo and overheat show on SWBF2's HUD.
 Heroes have no weapon pickups. Choosing a hero (a menu or a special box roll)
 swaps the SWBF2 unit, and the WaW placeholder becomes a melee/Force kit.
 
+### Building the WaW mod
+
+Tried on 2026-10-07 with a throwaway mod on stock Nacht der Untoten; the
+official mod tools were not needed.
+
+- **Tooling:** [OpenAssetTools](https://github.com/Laupetin/OpenAssetTools)
+  v0.33.0, unpacked to `tools/oat/` (not committed). `Unlinker` dumps the
+  stock scripts and weapon files from the game's own `.ff` files, and `Linker`
+  builds a `mod.ff` the game loads without complaint.
+- **Scripts:** a `rawfile` in `mod.ff` replaces the stock script of the same
+  name. An edited `maps/_zombiemode_weapons.gsc` (the box and wall-buy script)
+  ran in place of the stock one.
+- **Weapons:** the game reads a weapon's definition from a loose
+  `weapons/sp/<name>` file in the mod folder, not from the weapon asset in
+  `mod.ff`. Without that file it logs `Could not load weapon file` and hands
+  out the default weapon. With a copy of the stock Ray Gun file under a new
+  name, `GiveWeapon` gave a working Ray Gun. Whether the weapon asset in
+  `mod.ff` is needed at all for a placeholder was not tested.
+- **Where it goes:** `%LOCALAPPDATA%\Activision\CoDWaW\mods\<mod>\`, started
+  through Steam with `+set fs_game mods/<mod> +devmap nazi_zombie_prototype`.
+  Adding `+set logfile 2` writes `mods\<mod>\console.log` in the game folder.
+- **Stock files stay out of the repo.** The build has to patch the dumped
+  stock script rather than commit a modified copy of it.
+
 ## Rendering (Phase 2)
 
 SWBF2 renders the player's first-person weapon/arms and HUD offscreen at
