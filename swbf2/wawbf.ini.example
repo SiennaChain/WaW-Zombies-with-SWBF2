@@ -1,4 +1,4 @@
-; Copy to wawbf.ini next to d3d9.dll in Star Wars Battlefront II\GameData
+; Copy to wawbf.ini next to d3d9.dll in Star Wars Battlefront II Classic\GameData
 ; (the folder with BattlefrontII.exe). Comments start with ';'.
 
 [bridge]

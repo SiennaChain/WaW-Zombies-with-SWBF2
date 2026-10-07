@@ -21,7 +21,7 @@ Outputs in `build\out\`:
 | File | Goes to |
 |---|---|
 | `waw\d3d9.dll` | `steamapps\common\Call of Duty World at War\` (next to `CoDWaW.exe`) |
-| `swbf2\d3d9.dll` | `steamapps\common\Star Wars Battlefront II\GameData\` (next to `BattlefrontII.exe`) |
+| `swbf2\d3d9.dll` | `steamapps\common\Star Wars Battlefront II Classic\GameData\` (wherever `BattlefrontII.exe` is) |
 | `tools\wawbf_monitor.exe` | anywhere |
 
 Copy `waw\wawbf.ini.example` and `swbf2\wawbf.ini.example` from the repo next
