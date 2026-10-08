@@ -354,6 +354,12 @@ screen in the path: after the profile screen comes the single player tab
 leaves a string in memory at each step and `tools/probe/bfluatrace.ps1`
 looks for them.
 
+**Text.** A mission from an addon gets all its text from the addon's own
+`core.lvl`. Shipped without one, every label in the arena read `[NULL]` or
+showed its own key ("ifs.sideselect.choose..."), the game's stock text
+included. So the addon carries the whole string table, rebuilt from the
+tools' copy, plus the few lines of its own in `swbf2/arena/strings.txt`.
+
 **Three things that break the 2005 tools on a current machine**, all handled
 in `build.ps1` and explained there:
 

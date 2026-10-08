@@ -22,8 +22,10 @@ if(WIN32)
   add_library(wawbf_common STATIC
     common/config.cpp
     common/crashlog.cpp
+    common/frameprobe.cpp
     common/log.cpp
     common/memory.cpp
+    common/overlay.cpp
     common/shm.cpp)
   target_link_libraries(wawbf_common PUBLIC wawbf_protocol)
   target_compile_definitions(wawbf_common PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

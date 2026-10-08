@@ -20,8 +20,10 @@
 #include "config.h"
 #include "crashlog.h"
 #include "focus.h"
+#include "frameprobe.h"
 #include "log.h"
 #include "memory.h"
+#include "overlay.h"
 #include "shm.h"
 
 namespace wawbf {
@@ -571,6 +573,17 @@ void BridgeMain(HMODULE self) {
   Config config(dir + L"wawbf.ini");
   Settings settings = LoadSettings(config);
   config.Changed();  // the load above is current; only later saves count
+  // The picture for WaW (Phase 2), and the probe's own experiments. Publishing
+  // needs the frame cut at the depth clear that comes before the first-person
+  // weapon: the second depth-only clear of the frame.
+  const auto probe = [&] {
+    const bool publish = config.GetInt("overlay", "publish", 0) != 0;
+    frameprobe::Request(dir, config.GetString("debug", "frame_dump"));
+    frameprobe::SetCut(publish ? config.GetInt("overlay", "cut", 2) : config.GetInt("debug", "frame_cut", 0),
+                       publish ? 0 : std::strtoul(config.GetString("debug", "frame_cut_colour", "0").c_str(), nullptr, 0));
+    overlay::SetPublish(publish);
+  };
+  probe();
 
   SharedMapping shm;
   if (!shm.Open(kSideBf)) return;
@@ -651,6 +664,7 @@ void BridgeMain(HMODULE self) {
         const std::string previousPoke = settings.poke.text;
         settings = LoadSettings(config);
         if (settings.poke.type && settings.poke.text != previousPoke) ApplyPoke(settings.poke);
+        probe();
         std::lock_guard<std::mutex> lock(g_mutex);
         g_settings = settings;
         for (HoldState& hold : g_holds) hold = HoldState{};

@@ -13,8 +13,10 @@
 
 #include "bridge.h"
 #include "config.h"
+#include "frameprobe.h"
 #include "log.h"
 #include "memory.h"
+#include "overlay.h"
 
 namespace {
 
@@ -48,6 +50,7 @@ using EndSceneFn = HRESULT(WINAPI*)(void* self);
 CreateDeviceFn g_realCreateDevice = nullptr;
 PresentFn g_realPresent = nullptr;
 EndSceneFn g_realEndScene = nullptr;
+std::atomic<bool> g_frameProbe{false};  // [debug] frame_probe: see frameprobe.h
 
 // Which hook is driving BridgeFrame: 0 none yet, 1 the device's Present,
 // 2 EndScene. Present wins once it has been seen.
@@ -67,12 +70,16 @@ void Frame(int source) {
 
 HRESULT WINAPI PresentHook(void* self, const RECT* source, const RECT* destination, HWND window,
                            const void* dirtyRegion) {
+  wawbf::overlay::Publish(static_cast<IDirect3DDevice9*>(self));
+  if (g_frameProbe) wawbf::frameprobe::OnPresent(static_cast<IDirect3DDevice9*>(self));
   Frame(1);
   return g_realPresent(self, source, destination, window, dirtyRegion);
 }
 
 HRESULT WINAPI EndSceneHook(void* self) {
   Frame(2);
+  // While the scene is still open: the other game's picture goes on last.
+  wawbf::overlay::Draw(static_cast<IDirect3DDevice9*>(self));
   return g_realEndScene(self);
 }
 
@@ -87,6 +94,13 @@ HRESULT WINAPI CreateDeviceHook(void* self, UINT adapter, DWORD type, HWND focus
       g_realEndScene = reinterpret_cast<EndSceneFn>(previous);
     }
     wawbf::log::Info("Direct3D device created; frame hooks installed");
+    // Off unless asked for: it hooks a dozen more of the device's calls.
+    // Publishing a picture needs it too, for the cut (see overlay.h).
+    const wawbf::Config config(wawbf::ModuleDir(g_self) + L"wawbf.ini");
+    if (config.GetInt("debug", "frame_probe", 0) != 0 || config.GetInt("overlay", "publish", 0) != 0) {
+      wawbf::frameprobe::Install(static_cast<IDirect3DDevice9*>(*device));
+      g_frameProbe = true;
+    }
   }
   return result;
 }

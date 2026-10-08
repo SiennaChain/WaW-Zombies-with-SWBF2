@@ -18,6 +18,11 @@ view_angles = CoDWaW.exe+0x14ED18C
 ; matches.
 view_fov = CoDWaW.exe+0x3120348
 
+[overlay]
+; 1 = draw SWBF2's first-person weapon and HUD over this game's picture.
+; Needs [overlay] publish = 1 on the SWBF2 side. Can be switched live.
+draw = 0
+
 [proxy]
 ; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.
 chain =

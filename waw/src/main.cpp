@@ -22,6 +22,7 @@
 #include "crashlog.h"
 #include "log.h"
 #include "memory.h"
+#include "overlay.h"
 #include "shm.h"
 
 namespace wawbf {
@@ -115,6 +116,7 @@ void BridgeMain(HMODULE self) {
   Config config(dir + L"wawbf.ini");
   Settings settings = LoadSettings(config);
   config.Changed();  // the load above is current; only later saves count
+  overlay::SetDraw(config.GetInt("overlay", "draw", 0) != 0);
 
   SharedMapping shm;
   if (!shm.Open(kSideWaw)) return;
@@ -164,6 +166,7 @@ void BridgeMain(HMODULE self) {
       if (config.Changed()) {
         log::Info("wawbf.ini changed, reloading");
         settings = LoadSettings(config);
+        overlay::SetDraw(config.GetInt("overlay", "draw", 0) != 0);
         std::lock_guard<std::mutex> lock(g_mutex);
         g_settings = settings;
       }

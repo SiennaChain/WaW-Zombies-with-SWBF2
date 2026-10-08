@@ -158,6 +158,38 @@ static_assert(offsetof(SharedBlock, bf) == 0x80, "layout changed: bump kVersion"
 static_assert(sizeof(SharedBlock) <= kMappingSize, "mapping too small");
 
 // ---------------------------------------------------------------------------
+// The picture (Phase 2)
+//
+// SWBF2's first-person weapon and HUD, cut out of its frame, go to WaW through
+// a second mapping, because a picture is far bigger than everything else put
+// together. It holds two pictures: SWBF2 fills the one that is not `front`,
+// then makes it `front` and bumps `sequence`, so WaW never reads a picture
+// that is half written (unless it takes longer over one than SWBF2 takes to
+// draw two).
+//
+// Pixels are four bytes each, blue green red alpha, rows top to bottom with
+// no padding, and the colour is already multiplied by the alpha: a pixel is
+// laid over WaW's as  picture + waw * (1 - alpha).
+// ---------------------------------------------------------------------------
+constexpr const wchar_t* kFrameMappingName = L"Local\\WaWBF_frame_v1";
+constexpr uint32_t kFrameMagic = 0x52465757;  // "WWFR" in memory
+constexpr uint32_t kFrameMaxWidth = 1920;
+constexpr uint32_t kFrameMaxHeight = 1200;
+constexpr uint32_t kFrameMaxBytes = kFrameMaxWidth * kFrameMaxHeight * 4;
+
+struct alignas(64) FrameHeader {
+  std::atomic<uint32_t> magic;     // kFrameMagic once the writer has set it up
+  std::atomic<uint32_t> sequence;  // goes up by one for every picture published
+  std::atomic<uint32_t> front;     // 0 or 1: the picture that is complete
+  uint32_t width[2];
+  uint32_t height[2];
+  uint32_t timeUs[2];              // when each was taken; compare with ElapsedUs
+};
+
+constexpr uint32_t kFrameMappingSize = 64 + 2 * kFrameMaxBytes;
+static_assert(sizeof(FrameHeader) == 64, "FrameHeader changed: rename kFrameMappingName");
+
+// ---------------------------------------------------------------------------
 // Coordinates
 //
 // WaW (CoD) space: right-handed, X forward, Y left, Z up, 1 unit ~= 1 inch.

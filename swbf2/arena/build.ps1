@@ -81,16 +81,44 @@ $merge = Join-Path $proj '_BUILD\Common\MergeLocalize.bat'
 $mergeText = $latin1.GetString([IO.File]::ReadAllBytes($merge))
 if ($mergeText -match '(?m)^\s*more %%i') { Write-Text $merge ($mergeText -replace '(?m)^(\s*)more %%i', '$1type %%i') }
 
-# The tools' own string files are each one closing bracket short, and the
-# string compiler rejects them outright ("No matching bracket"). With no
-# strings the core level does not pack, and without the list of what is in
-# the core level nothing else packs either: that is how a missing bracket in
-# french.cfg leaves the map file empty. The bracket is added to this
-# project's copies.
-foreach ($cfg in Get-ChildItem -LiteralPath (Join-Path $proj 'Common\Localize') -Filter *.cfg) {
+# The string tables. Each is rebuilt from the tools' own copy every time, with
+# two changes:
+#
+# - The tools' files are each one closing bracket short, and the string
+#   compiler rejects them outright ("No matching bracket"). With no strings
+#   the core level does not pack, and without the list of what is in the core
+#   level nothing else packs either: that is how a missing bracket in
+#   french.cfg leaves the map file empty. The bracket is added.
+# - The arena's own text (strings.txt) is appended, as one more block per
+#   key; the compiler merges blocks.
+#
+# A string is stored as four bytes (a small counter the tools keep; 1 here)
+# and then UTF-16, written out in hex with the two digits of every byte
+# swapped, 32 bytes to a line.
+function ConvertTo-LocBlock([string]$key, [string]$text) {
+    $bytes = [byte[]](1, 0, 0, 0) + [Text.Encoding]::Unicode.GetBytes($text)
+    $hex = -join ($bytes | ForEach-Object { $h = $_.ToString('X2'); $h[1] + $h[0] })
+    $parts = $key.Split('.'); $lines = New-Object Collections.Generic.List[string]
+    $lines.Add('DataBase()'); $lines.Add('{')
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) { $pad = '  ' * ($i + 1); $lines.Add("${pad}VarScope(`"$($parts[$i])`")"); $lines.Add("${pad}{") }
+    $pad = '  ' * $parts.Count
+    $lines.Add("${pad}VarBinary(`"$($parts[-1])`")"); $lines.Add("${pad}{"); $lines.Add("${pad}  Size($($bytes.Count));")
+    for ($o = 0; $o -lt $hex.Length; $o += 64) { $lines.Add("${pad}  Value(`"$($hex.Substring($o, [Math]::Min(64, $hex.Length - $o)))`");") }
+    $lines.Add("${pad}}")
+    for ($i = $parts.Count - 2; $i -ge 0; $i--) { $lines.Add(('  ' * ($i + 1)) + '}') }
+    $lines.Add('}')
+    ($lines -join "`r`n") + "`r`n"
+}
+$ours = ''
+foreach ($line in Get-Content -LiteralPath (Join-Path $here 'strings.txt') -Encoding UTF8) {
+    if ($line -match '^\s*([A-Za-z0-9_.]+)\s*=\s*(.*)$') { $ours += ConvertTo-LocBlock $Matches[1] ($Matches[2].Trim().Replace('\n', "`r`n")) }
+}
+foreach ($cfg in Get-ChildItem -LiteralPath (Join-Path $ModTools 'data\Common\Localize') -Filter *.cfg) {
     $text = $latin1.GetString([IO.File]::ReadAllBytes($cfg.FullName))
     $short = ($text.Split('{').Count) - ($text.Split('}').Count)
-    if ($short -gt 0) { Write-Text $cfg.FullName ($text.TrimEnd() + "`r`n" + ('}' * $short) + "`r`n") }
+    if ($short -gt 0) { $text = $text.TrimEnd() + "`r`n" + ('}' * $short) + "`r`n" }
+    if ($cfg.BaseName -ne 'Comments') { $text += $ours }
+    Write-Text (Join-Path $proj "Common\Localize\$($cfg.Name)") $text
 }
 
 # Ours: the rosters (one mission each) with the script they share, the list of
@@ -161,6 +189,7 @@ try {
 
 $outputs = [ordered]@{
     (Join-Path $proj 'addme\munged\addme.script') = 'addme.script'
+    (Join-Path $proj '_LVL_PC\core.lvl')          = 'data\_LVL_PC\core.lvl'      # the text: see strings.txt
     (Join-Path $proj '_LVL_PC\mission.lvl')       = 'data\_LVL_PC\mission.lvl'
     (Join-Path $proj "_LVL_PC\$Id\$Id.lvl")       = "data\_LVL_PC\$Id\$Id.lvl"
 }

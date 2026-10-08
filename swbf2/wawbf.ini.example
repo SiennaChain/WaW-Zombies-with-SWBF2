@@ -95,6 +95,26 @@ poke =
 ; e.g.    BattlefrontII.exe+0x1A296B0 > 0x3C8 = f32 0.5   (aim 29 degrees up)
 hold1 =
 hold2 =
+; 1 = hook the Direct3D device's drawing calls so a frame can be recorded
+; (read at start-up; publishing a picture switches it on by itself).
+frame_probe = 0
+; Change this to record the next whole frame: how it was drawn goes to
+; wawbf_frame_<label>.txt and pictures of it to wawbf_frame_<label>_*.bmp,
+; next to the game. "<label>: 120, 240" also saves the picture before those
+; draw calls. See docs/PHASE2.md.
+frame_dump =
+; For experiments only: make this depth-only clear of every frame clear the
+; picture too, to this colour (alpha, red, green, blue). 0 = off.
+frame_cut = 0
+frame_cut_colour = 0x00000000
+
+[overlay]
+; 1 = send this game's first-person weapon and HUD to WaW every frame. The
+; frame is cut at the depth-only clear that comes before the weapon (cut = 2:
+; the second one), so the game's own window then shows the weapon and HUD on
+; black. See docs/PHASE2.md.
+publish = 0
+cut = 2
 
 [proxy]
 chain =

@@ -1,0 +1,16 @@
+# Text the arena adds to Battlefront II's own, as "key = text". \n is a line
+# break. build.ps1 encodes these into every language's string table (in
+# English: there are no translations).
+#
+# The whole table has to be shipped with the addon whether or not anything is
+# added: a mission from an addon gets its text from the addon's core.lvl, and
+# without one every label in the game reads [NULL] or shows its own key.
+
+mapname.name.WAW = WaW Arena
+mapname.description.WAW = WaW Arena\nAn empty field for the hidden game to stand in.
+
+# The heroes roster's two teams.
+common.sides.hero.name = Heroes
+common.sides.hero.longname = Heroes
+common.sides.villain.name = Villains
+common.sides.villain.longname = Villains
