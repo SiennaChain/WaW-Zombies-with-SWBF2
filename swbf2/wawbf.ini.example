@@ -7,10 +7,15 @@ tick_hz = 60
 [swbf2]
 ; Where BattlefrontII.exe keeps the player unit's position (3 floats).
 ; Formats: BattlefrontII.exe+0x123456 | 0x00ABCDEF | BattlefrontII.exe+0x1234 > 0x10 > 0x2C
-; Not found yet - see docs/PHASE0.md, step 4.
-player_position =
+; Found for the Steam exe listed in docs/PHASE0.md (step 4). It is the unit
+; the camera follows, which is the player's while they are alive.
+player_position = BattlefrontII.exe+0x1A296B0 > 0x0
 ; 1 = move the BF unit to wherever the WaW player is (Phase 0 exit test).
 follow = 0
+; 1 = keep a match playing when the game's window is not the focused one.
+; Without it the match pauses as soon as you click another window. Needs
+; windowed mode (/win). Can be switched live.
+keep_running = 0
 
 [mapping]
 ; How WaW space maps onto BF space - see protocol/wawbf_protocol.h.

@@ -23,4 +23,9 @@ inline bool WriteFloat3(uintptr_t address, const float v[3]) {
   return Write(address, v, sizeof(float) * 3);
 }
 
+// Redirects the game exe's import of `name` from `dll` to `replacement`.
+// Returns the real function so the replacement can call through, or null if
+// the exe does not import it.
+void* PatchImport(const char* dll, const char* name, void* replacement);
+
 }  // namespace wawbf::mem

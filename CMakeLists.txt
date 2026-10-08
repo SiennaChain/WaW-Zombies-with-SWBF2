@@ -48,6 +48,7 @@ if(WIN32)
 
   wawbf_bridge(wawbf_waw waw)
   wawbf_bridge(wawbf_swbf2 swbf2)
+  target_sources(wawbf_swbf2 PRIVATE swbf2/src/focus.cpp)
 
   add_executable(wawbf_monitor tools/monitor/main.cpp)
   target_link_libraries(wawbf_monitor PRIVATE wawbf_protocol)

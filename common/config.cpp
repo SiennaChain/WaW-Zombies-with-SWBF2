@@ -57,4 +57,17 @@ bool Config::GetAddress(const char* section, const char* key, AddressSpec& out) 
   return true;
 }
 
+bool Config::Changed() {
+  // A missing file counts as write time 0, so it is reported once and then
+  // again if the file appears.
+  uint64_t written = 0;
+  WIN32_FILE_ATTRIBUTE_DATA data;
+  if (GetFileAttributesExW(path_.c_str(), GetFileExInfoStandard, &data)) {
+    written = (uint64_t{data.ftLastWriteTime.dwHighDateTime} << 32) | data.ftLastWriteTime.dwLowDateTime;
+  }
+  if (written == lastWrite_) return false;
+  lastWrite_ = written;
+  return true;
+}
+
 }  // namespace wawbf

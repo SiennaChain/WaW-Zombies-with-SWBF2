@@ -15,20 +15,38 @@
 #include "shm.h"
 
 namespace wawbf {
+namespace {
+
+// Everything this bridge takes from wawbf.ini. Read again whenever the file
+// is saved, so it can be changed while the game runs.
+struct Settings {
+  AddressSpec origin, angles;
+  bool haveOrigin = false;
+  bool haveAngles = false;
+  int tickMs = 16;
+};
+
+Settings LoadSettings(const Config& config) {
+  Settings s;
+  s.haveOrigin = config.GetAddress("waw", "player_origin", s.origin);
+  s.haveAngles = config.GetAddress("waw", "view_angles", s.angles);
+  if (!s.haveOrigin) {
+    log::Info("[waw] player_origin not set: heartbeat only (see docs/PHASE0.md)");
+  }
+  s.tickMs = 1000 / std::max(1, config.GetInt("bridge", "tick_hz", 60));
+  return s;
+}
+
+}  // namespace
 
 void BridgeMain(HMODULE self) {
   const std::wstring dir = ModuleDir(self);
   log::Init(dir + L"wawbf_waw.log");
   log::Info("WaW bridge loaded (pid %lu)", GetCurrentProcessId());
 
-  const Config config(dir + L"wawbf.ini");
-  AddressSpec originSpec, anglesSpec;
-  const bool haveOrigin = config.GetAddress("waw", "player_origin", originSpec);
-  const bool haveAngles = config.GetAddress("waw", "view_angles", anglesSpec);
-  if (!haveOrigin) {
-    log::Info("[waw] player_origin not set: heartbeat only (see docs/PHASE0.md)");
-  }
-  const int tickMs = 1000 / std::max(1, config.GetInt("bridge", "tick_hz", 60));
+  Config config(dir + L"wawbf.ini");
+  Settings settings = LoadSettings(config);
+  config.Changed();  // the load above is current; only later saves count
 
   SharedMapping shm;
   if (!shm.Open(kSideWaw)) return;
@@ -40,10 +58,10 @@ void BridgeMain(HMODULE self) {
     shm.Beat();
 
     state.flags = 0;
-    if (haveOrigin && mem::ReadFloat3(mem::Resolve(originSpec), state.origin)) {
+    if (settings.haveOrigin && mem::ReadFloat3(mem::Resolve(settings.origin), state.origin)) {
       state.flags |= kWawOriginValid;
     }
-    if (haveAngles && mem::ReadFloat3(mem::Resolve(anglesSpec), state.viewAngles)) {
+    if (settings.haveAngles && mem::ReadFloat3(mem::Resolve(settings.angles), state.viewAngles)) {
       state.flags |= kWawAnglesValid;
     }
     ++state.frame;
@@ -55,11 +73,16 @@ void BridgeMain(HMODULE self) {
       peerWasAlive = peerAlive;
     }
 
-    // Once a second, log both sides' idea of the player position. When the
-    // mapping is right, "delta" stays near zero while you move around.
     const DWORD now = GetTickCount();
     if (now - lastReport >= 1000) {
       lastReport = now;
+      if (config.Changed()) {
+        log::Info("wawbf.ini changed, reloading");
+        settings = LoadSettings(config);
+      }
+
+      // Once a second, log both sides' idea of the player position. When the
+      // mapping is right, "delta" stays near zero while you move around.
       BfPlayerState bf{};
       const bool haveBf = peerAlive && shm.block()->bf.read(bf) && (bf.flags & kBfPositionValid);
       if ((state.flags & kWawOriginValid) && haveBf) {
@@ -76,7 +99,7 @@ void BridgeMain(HMODULE self) {
       }
     }
 
-    Sleep(tickMs);
+    Sleep(settings.tickMs);
   }
 }
 

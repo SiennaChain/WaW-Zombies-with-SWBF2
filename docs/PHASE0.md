@@ -88,20 +88,26 @@ keep moving? Our bridge thread runs either way, so the monitor can't tell
 you this. If SWBF2 pauses, finding and patching that check moves to the top
 of Phase 1, because everything later depends on it.
 
-Result (2026-10-08): it depends on the display mode, not on a focus check we
-need to patch. Measured as memory words changing per second
-(`tools/probe/activity.ps1`), all in an instant action match:
+Result (2026-10-08): it pauses, in two different ways, and both need dealing
+with.
 
-| Mode | Focused | Not focused |
-|---|---|---|
-| Fullscreen (minimises when you switch away) | 526,000 | 4,000 |
-| Windowed (`/win /resolution 1280 720`) | 593,000 to 669,000 | 347,000 to 465,000 |
+- **Fullscreen** minimises when you switch away and idles completely. Run it
+  windowed: `/win /resolution 1280 720`.
+- **Windowed**, it keeps drawing but a match pauses as soon as another window
+  is clicked. `[swbf2] keep_running = 1` fixes that: the bridge answers the
+  game's `GetForegroundWindow` / `GetFocus` calls with the game's own window
+  and withholds the window messages that announce losing focus
+  (`swbf2/src/focus.cpp`). With it on and the game unfocused, 25 to 27 of
+  about 35 soldiers moved in each 1.5 s sample (`tools/probe/bfsim.ps1`).
 
-So run SWBF2 windowed and it keeps simulating behind another window. Hooking
-`GetForegroundWindow` / `GetFocus` and withholding the focus-loss window
-messages made no measurable difference in windowed mode (421,000 to 547,000
-unfocused), so that code was left out. Not checked: whether input and sound
-still work while unfocused, and a hidden rather than merely covered window.
+An earlier version of this note said the hooks were unnecessary. That came
+from measuring memory words changing per second (`tools/probe/activity.ps1`),
+which reads 350,000 to 550,000 whether or not the match is paused, because a
+paused game still redraws. Count moving soldiers instead.
+
+Not checked: sound while unfocused, and a hidden rather than merely covered
+window. Input is not delivered while unfocused: the game re-requests its
+input devices every frame and is refused, which is harmless but worth knowing.
 
 - [x] SWBF2 keeps simulating while unfocused (or: notes on how it pauses)
 
@@ -204,8 +210,9 @@ player_position = BattlefrontII.exe+0x1A296B0 > 0x0
   or the death camera), so it is "the unit on screen", not strictly "the
   player's unit". For the hidden game, where the player's unit stays alive,
   the two are the same.
-- **Still to do.** Confirm through the bridge: with this in `wawbf.ini` the
-  log should trace the player's path, and `follow = 1` should move the unit.
+- **Confirmed through the bridge** by the follow test in step 5: with this in
+  `wawbf.ini`, positions written there moved the unit and read back as
+  written.
 - **Writes go through the bridge.** The outside lift test worked once, then
   the antivirus (ESET) began blocking any freshly compiled helper that writes
   to another process. Don't work around that: `follow = 1` writes from inside
@@ -223,16 +230,58 @@ player_position = BattlefrontII.exe+0x1A296B0 > 0x0
 
 - [x] `player_origin` found (record the WaW address here)
 - [x] `view_angles` found
-- [ ] `player_position` found and freezing it pins the unit
+- [x] `player_position` found and freezing it pins the unit
 
 ## 5. Follow test
+
+Both games windowed, SWBF2 with `keep_running = 1` so its match plays on while
+WaW has the focus. To land in Nacht without a mod loaded, WaW needs
+`+set com_introPlayed 1 +set com_startupIntroPlayed 1 +devmap nazi_zombie_prototype`;
+without the second flag the startup logo videos play after the map has
+started and drop it to the main menu.
 
 1. In both games, stand still. Copy WaW's origin from the monitor into
    `anchor_waw` and SWBF2's raw position into `anchor_bf` (SWBF2's
    `wawbf.ini`, `[mapping]`).
-2. Set `follow = 1` and restart SWBF2 (the ini is read at startup).
+2. Set `follow = 1`. The bridge re-reads `wawbf.ini` within a second of it
+   being saved, so nothing needs restarting.
 3. Walk around in WaW. The SWBF2 unit should move with you. Some jitter is
    expected, because Phase 0 writes the position from a background thread.
+
+Result (2026-10-08): passed. Anchors were the Nacht spawn `0, 424, 1.1` and
+wherever the SWBF2 unit was standing, `-81.37, -5.94, 245.31`. Over 91 s the
+WaW player covered 6,778 units, upstairs included, and the gap between the WaW
+origin and the SWBF2 unit mapped back into WaW space was 0.9 units at the
+median, 9.6 at worst while moving and 0.0 standing still.
+
+What that does and does not show: the position the bridge writes is the one
+it reads back a moment later, so the game is not overwriting it with
+something else. It does not show the unit moved the right way on screen;
+that is step 6.
+
+What it looked like on screen, watching both windows side by side:
+
+- **Facing the wrong way.** Expected: only position is written. Facing is the
+  Phase 1 TODO in `swbf2/src/main.cpp`.
+- **Very jittery.** Expected for the reason given above: a background thread
+  writes at 60 Hz with no relation to the game's own update.
+- **Fall animation, occasional damage, death a couple of times, and once the
+  unit launched itself** (probably the 9.6-unit worst case). These have one
+  cause. Only the position is written. The game's physics still believes the
+  unit is where it left it, moving at whatever speed it had, and above or
+  below the ground it expects: Nacht's floor heights are being imposed on a
+  map with different terrain. So the unit is "falling" for as long as its
+  written height is above the SWBF2 ground, the fall keeps speeding up because
+  nothing resets the velocity, and when the physics catches up it lands hard
+  or is flung. Enemy fire accounts for the rest: this was a live instant
+  action match.
+
+So for Phase 1, writing the position is not enough. The unit needs its
+velocity zeroed (or written) along with its position, its height taken from
+the SWBF2 ground rather than from WaW, gravity or fall damage switched off,
+and no enemies: a flat, empty arena with an invulnerable unit, which is what
+the design already calls for. Doing the write from inside the game's unit
+update, rather than from a thread, is what removes the jitter.
 
 ## 6. Measure the mapping
 
@@ -256,7 +305,8 @@ turns out the other way, also update the default in
 
 ## Done when
 
-- [ ] Both bridges connect and report heartbeats
+- [x] Both bridges connect and report heartbeats
 - [ ] Walking in WaW moves the SWBF2 unit in the same direction at the same scale
-- [ ] Standing still, the monitor's `delta` stays within a few units
+      (it moves and tracks; direction and scale on screen are step 6)
+- [x] Standing still, the monitor's `delta` stays within a few units
 - [ ] Findings (imports, unfocused behaviour, addresses, mapping) recorded in this file

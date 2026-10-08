@@ -1,8 +1,10 @@
 // wawbf.ini lives next to the bridge DLL in each game's folder. Addresses
 // are kept out of the code so they can be iterated on during reverse
-// engineering without rebuilding.
+// engineering without rebuilding, and (via Changed()) without restarting
+// the game.
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #include "address_spec.h"
@@ -24,8 +26,14 @@ class Config {
   // False if the key is missing/empty or malformed (malformed is logged).
   bool GetAddress(const char* section, const char* key, AddressSpec& out) const;
 
+  // True on the first call, and again each time the file has been saved
+  // since the previous call. The getters always read from disk; this only
+  // tells a caller when its own copies of the values are out of date.
+  bool Changed();
+
  private:
   std::wstring path_;
+  uint64_t lastWrite_ = ~uint64_t{0};
 };
 
 }  // namespace wawbf

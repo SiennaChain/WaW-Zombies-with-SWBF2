@@ -10,6 +10,7 @@
 
 #include "bridge.h"
 #include "config.h"
+#include "focus.h"
 #include "log.h"
 #include "memory.h"
 #include "shm.h"
@@ -28,6 +29,34 @@ CoordMapping LoadMapping(const Config& config) {
   return m;
 }
 
+// Everything this bridge takes from wawbf.ini. Read again whenever the file
+// is saved, so anchors and follow can be changed while the game runs.
+struct Settings {
+  AddressSpec position;
+  bool havePosition = false;
+  bool follow = false;
+  bool keepRunning = false;
+  CoordMapping mapping;
+  int tickMs = 16;
+};
+
+Settings LoadSettings(const Config& config) {
+  Settings s;
+  s.havePosition = config.GetAddress("swbf2", "player_position", s.position);
+  if (!s.havePosition) {
+    log::Info("[swbf2] player_position not set: heartbeat only (see docs/PHASE0.md)");
+  }
+  s.follow = config.GetInt("swbf2", "follow", 0) != 0;
+  s.keepRunning = config.GetInt("swbf2", "keep_running", 0) != 0;
+  s.mapping = LoadMapping(config);
+  log::Info("follow %d, mapping: scale %.5f z_sign %.0f anchor_waw (%.1f %.1f %.1f) anchor_bf (%.2f %.2f %.2f)",
+            s.follow ? 1 : 0, s.mapping.scale, s.mapping.zSign, s.mapping.anchorWaw.x,
+            s.mapping.anchorWaw.y, s.mapping.anchorWaw.z, s.mapping.anchorBf.x, s.mapping.anchorBf.y,
+            s.mapping.anchorBf.z);
+  s.tickMs = 1000 / std::max(1, config.GetInt("bridge", "tick_hz", 60));
+  return s;
+}
+
 }  // namespace
 
 void BridgeMain(HMODULE self) {
@@ -35,18 +64,9 @@ void BridgeMain(HMODULE self) {
   log::Init(dir + L"wawbf_swbf2.log");
   log::Info("SWBF2 bridge loaded (pid %lu)", GetCurrentProcessId());
 
-  const Config config(dir + L"wawbf.ini");
-  AddressSpec positionSpec;
-  const bool havePosition = config.GetAddress("swbf2", "player_position", positionSpec);
-  if (!havePosition) {
-    log::Info("[swbf2] player_position not set: heartbeat only (see docs/PHASE0.md)");
-  }
-  const bool follow = config.GetInt("swbf2", "follow", 0) != 0;
-  const CoordMapping mapping = LoadMapping(config);
-  log::Info("mapping: scale %.5f z_sign %.0f anchor_waw (%.1f %.1f %.1f) anchor_bf (%.2f %.2f %.2f)",
-            mapping.scale, mapping.zSign, mapping.anchorWaw.x, mapping.anchorWaw.y,
-            mapping.anchorWaw.z, mapping.anchorBf.x, mapping.anchorBf.y, mapping.anchorBf.z);
-  const int tickMs = 1000 / std::max(1, config.GetInt("bridge", "tick_hz", 60));
+  Config config(dir + L"wawbf.ini");
+  Settings settings = LoadSettings(config);
+  config.Changed();  // the load above is current; only later saves count
 
   SharedMapping shm;
   if (!shm.Open(kSideBf)) return;
@@ -56,6 +76,8 @@ void BridgeMain(HMODULE self) {
   DWORD lastReport = 0;
   for (;;) {
     shm.Beat();
+    focus::Tick(settings.keepRunning);
+
     const bool peerAlive = shm.PeerAlive();
     if (peerAlive != peerWasAlive) {
       log::Info(peerAlive ? "WaW bridge connected" : "WaW bridge lost");
@@ -63,13 +85,13 @@ void BridgeMain(HMODULE self) {
     }
 
     state.flags = 0;
-    const uintptr_t positionAddr = havePosition ? mem::Resolve(positionSpec) : 0;
+    const uintptr_t positionAddr = settings.havePosition ? mem::Resolve(settings.position) : 0;
 
     WawPlayerState waw{};
-    if (follow && positionAddr && peerAlive && shm.block()->waw.read(waw) &&
+    if (settings.follow && positionAddr && peerAlive && shm.block()->waw.read(waw) &&
         (waw.flags & kWawOriginValid)) {
       const Vec3 target =
-          WawToBf({waw.origin[0], waw.origin[1], waw.origin[2]}, mapping);
+          WawToBf({waw.origin[0], waw.origin[1], waw.origin[2]}, settings.mapping);
       const float v[3] = {target.x, target.y, target.z};
       if (mem::WriteFloat3(positionAddr, v)) state.flags |= kBfFollowing;
       // TODO(phase 1): facing. Needs SWBF2's rotation representation; then
@@ -79,7 +101,7 @@ void BridgeMain(HMODULE self) {
     if (positionAddr && mem::ReadFloat3(positionAddr, state.rawPosition)) {
       state.flags |= kBfPositionValid;
       const Vec3 w = BfToWaw({state.rawPosition[0], state.rawPosition[1], state.rawPosition[2]},
-                             mapping);
+                             settings.mapping);
       state.positionInWaw[0] = w.x;
       state.positionInWaw[1] = w.y;
       state.positionInWaw[2] = w.z;
@@ -88,13 +110,19 @@ void BridgeMain(HMODULE self) {
     shm.block()->bf.write(state);
 
     const DWORD now = GetTickCount();
-    if (now - lastReport >= 1000 && (state.flags & kBfPositionValid)) {
+    if (now - lastReport >= 1000) {
       lastReport = now;
-      log::Info("bf raw (%.2f %.2f %.2f)%s", state.rawPosition[0], state.rawPosition[1],
-                state.rawPosition[2], (state.flags & kBfFollowing) ? " following" : "");
+      if (config.Changed()) {
+        log::Info("wawbf.ini changed, reloading");
+        settings = LoadSettings(config);
+      }
+      if (state.flags & kBfPositionValid) {
+        log::Info("bf raw (%.2f %.2f %.2f)%s", state.rawPosition[0], state.rawPosition[1],
+                  state.rawPosition[2], (state.flags & kBfFollowing) ? " following" : "");
+      }
     }
 
-    Sleep(tickMs);
+    Sleep(settings.tickMs);
   }
 }
 
