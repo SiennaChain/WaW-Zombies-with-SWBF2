@@ -88,7 +88,22 @@ keep moving? Our bridge thread runs either way, so the monitor can't tell
 you this. If SWBF2 pauses, finding and patching that check moves to the top
 of Phase 1, because everything later depends on it.
 
-- [ ] SWBF2 keeps simulating while unfocused (or: notes on how it pauses)
+Result (2026-10-08): it depends on the display mode, not on a focus check we
+need to patch. Measured as memory words changing per second
+(`tools/probe/activity.ps1`), all in an instant action match:
+
+| Mode | Focused | Not focused |
+|---|---|---|
+| Fullscreen (minimises when you switch away) | 526,000 | 4,000 |
+| Windowed (`/win /resolution 1280 720`) | 593,000 to 669,000 | 347,000 to 465,000 |
+
+So run SWBF2 windowed and it keeps simulating behind another window. Hooking
+`GetForegroundWindow` / `GetFocus` and withholding the focus-loss window
+messages made no measurable difference in windowed mode (421,000 to 547,000
+unfocused), so that code was left out. Not checked: whether input and sound
+still work while unfocused, and a hidden rather than merely covered window.
+
+- [x] SWBF2 keeps simulating while unfocused (or: notes on how it pauses)
 
 ## 4. Find the player position in memory
 
@@ -148,6 +163,63 @@ right address. If the game keeps overwriting it, it's a copy.
 
 Put each value in the relevant `wawbf.ini`, restart, and confirm the monitor
 shows valid positions that change as you move.
+
+Result (2026-10-08, exe build listed at the top), found with `tools/probe/`
+instead of Cheat Engine. Provisional: not yet confirmed after a respawn.
+
+```ini
+player_position = BattlefrontII.exe+0x1A296B0 > 0x0
+```
+
+- **How it was found.** `bfscan.ps1` has the player follow beeps (stand,
+  walk, stand, ...) and keeps floats that hold still while standing and differ
+  after every walk, then pairs them up as x and z 8 bytes apart. "Still" has
+  to be a small tolerance: with bit-for-bit equality the unit was missed.
+- **Which copy is real.** 19 addresses followed the unit. `bfnudge.ps1` raised
+  each one's height by 3 m. Only one stayed raised, fell back to the ground
+  over about 0.6 s, and took 15 of the others up with it: that is the position
+  the game moves the unit from. The rest snapped back within 20 ms.
+- **Getting to it.** That address is in the heap and moves with every spawn.
+  `bfptr.ps1` found the unit object 0x120 bytes before it and two fixed
+  pointers to that object, `+0x1B77078` and `+0x1B84190`. Layout is x, y, z
+  with y up, as expected.
+- **Which pointer.** Neither of those. Both pointed at the unit at the moment
+  of the scan and at unrelated things later: with `+0x1B84190 > 0x120` in
+  `wawbf.ini` the bridge logged one fixed spot for 95 s while the player ran
+  around. One good-looking moment proves nothing; a chain has to hold across
+  lives.
+- **Ground truth without a pointer.** Soldiers are the heap objects whose
+  first word is `BattlefrontII.exe+0x39D114` (31 to 41 of them in a match),
+  with the position at +0x120. The player's is the one the camera
+  (`+0x3DE3A8`) sits about 4 m behind. `bfunits.ps1` lists them.
+- **Census.** `bfcensus.ps1` records, for each life, every exe slot that
+  points into that soldier (directly, or through one heap object), and keeps
+  only those seen in every life. Over six lives one direct slot survived:
+  `+0x1A296B0`, which points straight at the position (soldier + 0x120). It
+  agreed with the camera-followed soldier in 122 of 134 samples. Everything
+  else matched one to three lives. `+0x1B99A78` also survived, as a pointer
+  to soldier + 0x258.
+- **What that pointer means.** It follows whichever soldier the camera
+  follows. While the player is dead that is something else (a spectated unit
+  or the death camera), so it is "the unit on screen", not strictly "the
+  player's unit". For the hidden game, where the player's unit stays alive,
+  the two are the same.
+- **Still to do.** Confirm through the bridge: with this in `wawbf.ini` the
+  log should trace the player's path, and `follow = 1` should move the unit.
+- **Writes go through the bridge.** The outside lift test worked once, then
+  the antivirus (ESET) began blocking any freshly compiled helper that writes
+  to another process. Don't work around that: `follow = 1` writes from inside
+  the game, which is what the design needs anyway. Read-only helpers are
+  unaffected.
+- **False lead worth knowing.** `BattlefrontII.exe+0x569D9C` (seven entries,
+  0x44 apart) passed the first scan and looked like the player, but it is a
+  list of recent sound positions: it matched because the player's own
+  footsteps were the nearest sounds, and it jumps across the map when other
+  sounds play.
+- `BattlefrontII.exe+0x1B84300` matched the unit's x and z while it stood
+  still, but later held a stale position, so don't rely on it.
+  `BattlefrontII.exe+0x3DE378` is a 4x4 matrix that trails the unit by a few
+  metres, most likely the camera.
 
 - [x] `player_origin` found (record the WaW address here)
 - [x] `view_angles` found
