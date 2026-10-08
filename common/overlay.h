@@ -33,5 +33,8 @@ void Publish(IDirect3DDevice9* device);
 // unless SetDraw(true), or if no picture has arrived for half a second.
 void SetDraw(bool on);
 void Draw(IDirect3DDevice9* device);
+// True while the other game's picture is really going onto the screen: a
+// picture was drawn within the last half second.
+bool Drawing();
 
 }  // namespace wawbf::overlay

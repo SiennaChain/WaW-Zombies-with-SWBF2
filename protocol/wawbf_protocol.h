@@ -23,7 +23,7 @@ namespace wawbf {
 
 constexpr uint32_t kMagic = 0x46425757;  // "WWBF" in memory
 constexpr uint32_t kMagicInitializing = 1;
-constexpr uint32_t kVersion = 3;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov
+constexpr uint32_t kVersion = 4;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons
 constexpr const wchar_t* kMappingName = L"Local\\WaWBF_v1";
 constexpr uint32_t kMappingSize = 0x10000;  // 64 KiB; later phases add rings
 constexpr uint32_t kHeartbeatTimeoutMs = 2000;
@@ -104,6 +104,14 @@ enum WawFlags : uint32_t {
   kWawFovValid = 1u << 2,
 };
 
+// What the player is holding down in WaW that belongs to SWBF2's side of the
+// game: the weapon is SWBF2's, so pulling its trigger is too.
+enum WawButtons : uint32_t {
+  kWawButtonFire = 1u << 0,     // WaW's attack
+  kWawButtonAltFire = 1u << 1,  // WaW's aim down the sights
+  kWawButtonReload = 1u << 2,
+};
+
 // Game A -> game B. WaW is authoritative for player movement.
 struct WawPlayerState {
   uint32_t frame;        // increments on every publish
@@ -121,6 +129,7 @@ struct WawPlayerState {
   // horizontal and half the vertical angle. SWBF2's picture can only be laid
   // over WaW's if both are drawn with the same one.
   float tanHalfFov[2];
+  uint32_t buttons;  // WawButtons held down now
 };
 
 // The full angle, in degrees, that a tangent of half of it stands for.
@@ -151,7 +160,7 @@ struct SharedBlock {
 
 static_assert(std::is_standard_layout<SharedBlock>::value, "layout must be fixed");
 static_assert(sizeof(PeerInfo) == 12, "PeerInfo layout changed: bump kVersion");
-static_assert(sizeof(WawPlayerState) == 44, "WawPlayerState changed: bump kVersion");
+static_assert(sizeof(WawPlayerState) == 48, "WawPlayerState changed: bump kVersion");
 static_assert(sizeof(BfPlayerState) == 32, "BfPlayerState changed: bump kVersion");
 static_assert(offsetof(SharedBlock, waw) == 0x40, "layout changed: bump kVersion");
 static_assert(offsetof(SharedBlock, bf) == 0x80, "layout changed: bump kVersion");

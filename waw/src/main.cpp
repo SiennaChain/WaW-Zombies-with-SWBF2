@@ -15,7 +15,10 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <vector>
 
+#include "address_spec.h"
 #include "bridge.h"
 #include "clock.h"
 #include "config.h"
@@ -35,14 +38,50 @@ struct Settings {
   bool haveOrigin = false;
   bool haveAngles = false;
   bool haveFov = false;
+  bool forwardButtons = true;
+  // Where the game records each of SWBF2's buttons as held; empty = not known.
+  std::vector<AddressSpec> heldFire, heldAltFire, heldReload;
+  AddressSpec drawGun;  // the byte behind cg_drawGun
+  bool haveDrawGun = false;
   int tickMs = 16;
 };
+
+// A list of addresses separated by commas. One that cannot be read as an
+// address is logged and left out.
+std::vector<AddressSpec> LoadPlaces(const Config& config, const char* key) {
+  std::vector<AddressSpec> places;
+  const std::string text = config.GetString("waw", key);
+  for (size_t start = 0;;) {
+    const size_t comma = text.find(',', start);
+    const std::string part = text.substr(start, comma == std::string::npos ? comma : comma - start);
+    AddressSpec place;
+    if (ParseAddressSpec(part, place)) {
+      places.push_back(place);
+    } else if (part.find_first_not_of(" \t") != std::string::npos) {
+      log::Error("[waw] %s: can't parse address \"%s\"", key, part.c_str());
+    }
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return places;
+}
 
 Settings LoadSettings(const Config& config) {
   Settings s;
   s.haveOrigin = config.GetAddress("waw", "player_origin", s.origin);
   s.haveAngles = config.GetAddress("waw", "view_angles", s.angles);
   s.haveFov = config.GetAddress("waw", "view_fov", s.fov);
+  s.forwardButtons = config.GetInt("waw", "forward_buttons", 1) != 0;
+  s.heldFire = LoadPlaces(config, "held_fire");
+  s.heldAltFire = LoadPlaces(config, "held_alt_fire");
+  s.heldReload = LoadPlaces(config, "held_reload");
+  s.haveDrawGun = config.GetAddress("waw", "draw_gun", s.drawGun);
+  const auto source = [](const std::vector<AddressSpec>& places, const char* fallback) {
+    return places.empty() ? fallback : "the game's own record";
+  };
+  log::Info("buttons for SWBF2: fire from %s, alt fire from %s, reload from %s%s",
+            source(s.heldFire, "the left mouse button"), source(s.heldAltFire, "the right mouse button"),
+            source(s.heldReload, "the R key"), s.forwardButtons ? "" : " (forward_buttons = 0: none are sent)");
   if (!s.haveOrigin) {
     log::Info("[waw] player_origin not set: heartbeat only (see docs/PHASE0.md)");
   }
@@ -58,6 +97,66 @@ Settings g_settings;             // guarded by g_mutex
 SharedBlock* g_block = nullptr;  // guarded by g_mutex; set once the mapping is open
 WawPlayerState g_state{};        // guarded by g_mutex; the last state published
 std::atomic<uint32_t> g_frames{0};
+
+// True if any of these places in the game holds a byte that is not zero.
+bool AnyHeld(const std::vector<AddressSpec>& places) {
+  for (const AddressSpec& place : places) {
+    uint8_t held = 0;
+    const uintptr_t address = mem::Resolve(place);
+    if (address && mem::Read(address, &held, sizeof(held)) && held) return true;
+  }
+  return false;
+}
+
+// The buttons that belong to SWBF2's side of the game, as they are held now.
+//
+// Each is taken from the game's own record of it. The game keeps one for
+// every action ("+attack" and the rest) and switches it on and off as the
+// player's bindings say, so it reads "attack is held" whether attack is on a
+// mouse button, a key or a controller's trigger. Reading the left mouse
+// button instead, as this first did, left a player with a controller unable
+// to fire.
+//
+// A button whose record is not in wawbf.ini falls back to a fixed one on the
+// mouse or keyboard, read only while WaW is the window in front: a click in
+// some other window is not a shot.
+uint32_t HeldButtons(const Settings& s) {
+  DWORD foreground = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &foreground);
+  const bool inFront = foreground == GetCurrentProcessId();
+  const struct {
+    uint32_t bit;
+    const std::vector<AddressSpec>& places;
+    int fallbackKey;
+  } buttons[] = {{kWawButtonFire, s.heldFire, VK_LBUTTON},
+                 {kWawButtonAltFire, s.heldAltFire, VK_RBUTTON},
+                 {kWawButtonReload, s.heldReload, 'R'}};
+  uint32_t held = 0;
+  for (const auto& button : buttons) {
+    const bool down = button.places.empty() ? inFront && (GetAsyncKeyState(button.fallbackKey) & 0x8000) != 0
+                                            : AnyHeld(button.places);
+    if (down) held |= button.bit;
+  }
+  return held;
+}
+
+// One gun on screen, not two: while SWBF2's weapon is being drawn over the
+// picture, WaW's own is switched off (its cg_drawGun setting), and it comes
+// back if SWBF2's picture stops arriving. WaW's gun is otherwise untouched:
+// it still fires, and whatever the player sets cg_drawGun to themselves is
+// left alone while there is no overlay. Call with g_mutex held.
+void HideGun() {
+  static bool hiding = false;
+  const bool hide = overlay::Drawing();
+  if (!g_settings.haveDrawGun || (!hide && !hiding)) return;
+  const uintptr_t address = mem::Resolve(g_settings.drawGun);
+  if (!address) return;  // the game has not made the setting yet
+  const uint8_t wanted = hide ? 0 : 1;
+  uint8_t now = wanted;
+  if (mem::Read(address, &now, sizeof(now)) && now != wanted) mem::Write(address, &wanted, sizeof(wanted));
+  if (hide != hiding) log::Info(hide ? "hiding WaW's own gun while SWBF2's is drawn" : "showing WaW's own gun again");
+  hiding = hide;
+}
 
 // Reads the player and publishes it if it has changed. Call with g_mutex held.
 //
@@ -86,7 +185,8 @@ void Publish() {
     next.tanHalfFov[1] = fov[1];
     next.flags |= kWawFovValid;
   }
-  const bool same = next.flags == g_state.flags &&
+  next.buttons = s.forwardButtons ? HeldButtons(s) : 0;
+  const bool same = next.flags == g_state.flags && next.buttons == g_state.buttons &&
                     std::memcmp(next.origin, g_state.origin, sizeof(next.origin)) == 0 &&
                     std::memcmp(next.viewAngles, g_state.viewAngles, sizeof(next.viewAngles)) == 0 &&
                     std::memcmp(next.tanHalfFov, g_state.tanHalfFov, sizeof(next.tanHalfFov)) == 0;
@@ -105,6 +205,7 @@ void BridgeFrame() {
   ++g_frames;
   std::lock_guard<std::mutex> lock(g_mutex);
   Publish();
+  HideGun();
 }
 
 void BridgeMain(HMODULE self) {

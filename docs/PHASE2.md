@@ -11,8 +11,9 @@ two cameras agree, SWBF2 sits in an empty arena).
 - [x] The weapon and HUD cut out of the frame, with transparency
 - [x] The picture carried to WaW and drawn over it, every frame
 - [x] Judged by eye: looks good, no lag, no flicker, no drop in frame rate
-- [ ] WaW's own gun hidden (by hand for now: `cg_drawGun 0` in its console)
-- [ ] Fire and abilities sent to SWBF2
+- [x] WaW's own gun hidden while SWBF2's is drawn
+- [x] Fire sent to SWBF2, whatever it is bound to in either game (checked with a controller)
+- [ ] The other buttons (secondary fire, reload, abilities): the way is there, the numbers are not
 - [ ] One HUD, not two
 - [ ] SWBF2 hidden while this runs (`hidden = 1` exists; not yet tried together)
 
@@ -85,12 +86,140 @@ surface between processes, so the picture goes through main memory:
 At 1280x720 that is 3.7 MB copied twice a frame. WaW stayed at 91 frames a
 second and SWBF2 at 80, the same as before.
 
+## Fire
+
+The WaW bridge says which buttons are held (`WawPlayerState::buttons`); the
+SWBF2 bridge pulls the trigger (`swbf2/src/input.cpp`, switched on with
+`[swbf2] forward_fire = 1`).
+
+Neither end deals in keys or buttons. Each game already turns the player's
+bindings into "this action is on", and that is where both ends work: WaW's
+"attack" is read after WaW's bindings, and SWBF2's "fire" is switched on
+after SWBF2's. A player can have fire on a mouse button in one game and a
+controller's trigger in the other, or change either, and nothing here needs
+to know.
+
+### What did not work
+
+Both ends were first written around a particular button, and both failed for
+the first player to try them, who uses a controller:
+
+- WaW's end read the left mouse button. The right trigger is not the left
+  mouse button.
+- SWBF2's end pressed the mouse button for the game, by hooking its
+  DirectInput mouse and answering "left button down". The press arrived (the
+  game's mouse object and its table of raw controls both showed it) and the
+  gun did not fire: with fire on a controller's trigger, the mouse button was
+  bound to nothing.
+
+### WaW: which buttons are held
+
+The game keeps a 20-byte record for each of its actions (`+attack`,
+`+reload`, `+speed` ...). When a bound key or button goes down, the action's
+"down" function puts that key's number in the record and sets a byte at
+`+0x10`; "up" clears it. The byte is the game's own answer to "is attack
+held".
+
+The Steam exe is encrypted on disk, so this was read from the running game
+(read-only): find the text `+attack`, find the code that registers it as a
+command, read the few bytes of the function it registers. That function does
+nothing but load the record's address and call "down".
+`tools/probe/wawactions.ps1` does those steps for a list of actions:
+
+| Action | Record | Held byte |
+|---|---|---|
+| `+attack` | `CoDWaW.exe+0x2C0FE4C` | `+0x2C0FE5C` |
+| `+speed` (aim; `+speed_throw` sets it too) | `+0x2C0FDAC` | `+0x2C0FDBC` |
+| `+reload` | `+0x2C0FEC4` | `+0x2C0FED4` |
+| `+usereload` | `+0x2C0FED8` | `+0x2C0FEE8` |
+| `+frag` | `+0x2C0FE74` | `+0x2C0FE84` |
+| `+smoke` | `+0x2C0FE88` | `+0x2C0FE98` |
+| `+melee` | `+0x2C0FE9C` | `+0x2C0FEAC` |
+| `+activate` | `+0x2C0FEB0` | `+0x2C0FEC0` |
+| `+sprint` | `+0x2C0FF50` | `+0x2C0FF60` |
+| `+gostand` | `+0x2C0FDE8` | `+0x2C0FDF8` |
+
+`[waw] held_fire`, `held_alt_fire` and `held_reload` take the held bytes. The
+first word of a record is the number of the key holding it down: 19 is a
+controller's right trigger, which is what showed up there for this player.
+
+### SWBF2: how the game gets from a button to a shot
+
+Read from a disassembly of the exe. Addresses are offsets from where
+`BattlefrontII.exe` is loaded (Steam build).
+
+1. Each player has a controller object; the first player's is at
+   `+0x1ABE078`. Once a frame its update (`+0x14B80`) copies every device
+   into one flat array of **raw controls**: 760 floats at controller `+0x14`,
+   76 to a device.
+2. The player's **bindings** are a table at controller `+0x20BC`: for each of
+   43 **game functions**, two codes. A code up to `0xFF` is a keyboard key
+   (DirectInput scan code); a higher one is a raw control, `(code >> 8) - 1`.
+3. `+0x153C0` walks that table and, for every binding that is pressed, calls
+   `+0x12B640` to switch the function on in the player's **control state**
+   (pointer at controller `+0x25D0`). The state is four floats for the
+   movement and look axes, and at `+0x10` one bit for each function that is
+   on. It is emptied (`+0x12B8B0`) at the start of every update.
+4. The soldier is driven from the control state. Nothing after this point
+   knows what a mouse is.
+
+Function 0 is primary fire. Functions 0 to 7, 9 to 12 and 29 stay on while
+their button is down; the rest below 30 are on only for the update in which
+it went down. 30 and up are not bits but the axes: 35 to 38 are strafe right,
+strafe left, forward and back.
+
+`tools/probe/bfwatch.ps1` shows the control state changing as the player
+presses things, and `tools/probe/bfcontrols.ps1` the raw controls.
+
+### SWBF2: what the bridge does
+
+It turns the function on in the control state, in the same update, just after
+the game has filled the state in and before anything reads it: the last call
+the controller's update makes with that frame's input (`+0x1537B`) is sent
+through a few bytes of our own first. Writing the bit from the bridge's frame
+hook instead does nothing, because the next update empties the state before
+the soldier looks at it.
+
+So it does not depend on the player's bindings, and SWBF2 does not need to be
+able to see a device at all, which it cannot from behind WaW. Whatever the
+player really presses in SWBF2 still works; the bridge only adds.
+
+The exe's bytes at the call are checked before it is changed. A different
+build is left alone and the log says so.
+
+Checked with `[debug] force_functions = 0x1`, which holds function 0 on with
+nobody touching anything: with SWBF2 behind WaW, pictures of its window show
+the muzzle flash, the recoil and the bolt landing.
+
+`[debug] force_functions` is also how the other numbers are to be found: hold
+one bit on and see what the soldier does. `alt_fire_function` and
+`reload_function` wait for that.
+
+### End to end
+
+`tools/probe/firelink.ps1` watches WaW's attack record and SWBF2's fire bit
+together. With the player on a controller: 6 pulls, each held down by WaW's
+key 19 (the right trigger), SWBF2's fire on in all 6, about 15 ms after.
+
+## One gun
+
+WaW draws its own gun unless its `cg_drawGun` setting is 0. The bridge keeps
+that at 0 while SWBF2's picture is being drawn over WaW's and puts it back to
+1 if the picture stops, so the player is never left with no gun or two.
+`[waw] draw_gun` is the byte: the setting is found through the pointer WaW
+keeps to it (`CoDWaW.exe+0x3066528`), and its value is `0x10` into it.
+
+Putting `+set cg_drawGun 0` on WaW's command line does not last, which is why
+it is written rather than set once.
+
 ## Not done yet
 
-- **Fire.** The player's clicks only reach WaW, so SWBF2's weapon never
-  fires. Next.
-- **Two guns.** WaW still draws its own. `cg_drawGun 0` hides it; it should
-  be set by the mod, not typed.
+- **What a shot does.** SWBF2's weapon fires, and WaW's own hidden gun fires
+  with it. The bolt is part of SWBF2's world, which is cut away, so only the
+  flash and the recoil reach WaW's picture; and it is still WaW's bullet that
+  hurts the zombie. Deciding which game owns the damage is Phase 3.
+- **The other buttons.** WaW's aim and reload are sent; SWBF2 does nothing
+  with them until their function numbers are known.
 - **Two HUDs.** Both games' are on screen. Which parts of each survive is a
   design choice: SWBF2's crosshair and ammo belong to its weapon; WaW's
   points and round count belong to its game; SWBF2's minimap and health show

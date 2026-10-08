@@ -58,6 +58,7 @@ UINT g_textureWidth = 0, g_textureHeight = 0;
 uint32_t g_drawnSequence = 0;
 bool g_haveDrawn = false;
 DWORD g_lastNewPicture = 0;  // GetTickCount when the sequence last moved
+std::atomic<DWORD> g_lastDrawn{0};  // GetTickCount when a picture was last drawn; 0 = never
 
 struct Vertex {
   float x, y, z, rhw, u, v;
@@ -217,8 +218,14 @@ void Draw(IDirect3DDevice9* device) {
 
   saved->Apply();
   saved->Release();
+  g_lastDrawn.store(now ? now : 1, std::memory_order_relaxed);
   if (!saidOk) log::Info("overlay: drawing a %ux%u picture over a %lux%lu view", width, height, viewport.Width, viewport.Height);
   saidOk = true;
+}
+
+bool Drawing() {
+  const DWORD last = g_lastDrawn.load(std::memory_order_relaxed);
+  return last != 0 && GetTickCount() - last < 500;
 }
 
 }  // namespace wawbf::overlay

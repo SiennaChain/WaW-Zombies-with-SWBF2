@@ -21,6 +21,7 @@
 #include "crashlog.h"
 #include "focus.h"
 #include "frameprobe.h"
+#include "input.h"
 #include "log.h"
 #include "memory.h"
 #include "overlay.h"
@@ -138,6 +139,8 @@ struct Settings {
   bool haveViewProjection = false;
   bool keepRunning = false;
   bool hidden = false;
+  bool forwardFire = false;      // pull this game's trigger when the WaW player pulls theirs
+  input::Functions functions;    // which of the game's functions each WaW button turns on
   CoordMapping mapping;
   int tickMs = 16;
 };
@@ -194,6 +197,11 @@ Settings LoadSettings(const Config& config) {
   }
   s.keepRunning = config.GetInt("swbf2", "keep_running", 0) != 0;
   s.hidden = config.GetInt("swbf2", "hidden", 0) != 0;
+  s.forwardFire = config.GetInt("swbf2", "forward_fire", 0) != 0;
+  s.functions.fire = config.GetInt("swbf2", "fire_function", s.functions.fire);
+  s.functions.altFire = config.GetInt("swbf2", "alt_fire_function", s.functions.altFire);
+  s.functions.reload = config.GetInt("swbf2", "reload_function", s.functions.reload);
+  input::SetFunctions(s.functions);
   s.haveViewProjection = config.GetAddress("swbf2", "view_projection", s.viewProjection);
   s.mapping = LoadMapping(config);
   log::Info("follow %d (height %s, velocity %s, facing %s +%d extra, pitch %s), %d held value(s), mapping: scale %.5f z_sign %.0f yaw_sign %.0f yaw_offset %.0f pitch_sign %.0f anchor_waw (%.1f %.1f %.1f) anchor_bf (%.2f %.2f %.2f)",
@@ -557,11 +565,24 @@ void ReportKept(const char* what, Kept& counts) {
 
 }  // namespace
 
+// Hands the buttons the WaW player is holding to the input hooks. A WaW that
+// has gone quiet is holding nothing: a trigger must not stick down because
+// the other game froze.
+void ForwardButtons(SharedBlock* block) {
+  WawPlayerState waw{};
+  uint32_t buttons = 0;
+  if (block && WawAlive(block) && block->waw.read(waw) && ElapsedUs(waw.timeUs, NowUs()) < 300000) {
+    buttons = waw.buttons;
+  }
+  input::SetButtons(buttons);
+}
+
 void BridgeFrame() {
   ++g_frames;
   std::lock_guard<std::mutex> lock(g_mutex);
   g_following = Follow(g_settings, g_block);
   Hold(g_settings);
+  ForwardButtons(g_block);
 }
 
 void BridgeMain(HMODULE self) {
@@ -582,6 +603,8 @@ void BridgeMain(HMODULE self) {
     frameprobe::SetCut(publish ? config.GetInt("overlay", "cut", 2) : config.GetInt("debug", "frame_cut", 0),
                        publish ? 0 : std::strtoul(config.GetString("debug", "frame_cut_colour", "0").c_str(), nullptr, 0));
     overlay::SetPublish(publish);
+    input::SetForced(static_cast<uint32_t>(config.GetInt("debug", "force_buttons", 0)));
+    input::SetForcedFunctions(std::strtoul(config.GetString("debug", "force_functions", "0").c_str(), nullptr, 0));
   };
   probe();
 
@@ -628,7 +651,9 @@ void BridgeMain(HMODULE self) {
     if (!rendering) {
       std::lock_guard<std::mutex> lock(g_mutex);
       g_following = Follow(g_settings, g_block);
+      ForwardButtons(g_block);
     }
+    input::Tick(settings.forwardFire);
 
     // Say when following starts and stops (a death stops it; a respawn resumes it).
     static bool wasFollowing = false;

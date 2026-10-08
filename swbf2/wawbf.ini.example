@@ -55,6 +55,19 @@ keep_running = 0
 ; 1 = do not show the game's window at all. It goes on drawing and playing.
 ; Can be switched live; leave it 0 while there are menus to click through.
 hidden = 0
+; 1 = pull this game's trigger while the WaW player holds theirs. The game's
+; "fire" is switched on inside the game itself, after it has read its own
+; devices, so it does not matter what fire is bound to in this game's options
+; (mouse, key or controller) or that its window is not the one in front. Can
+; be switched live. See docs/PHASE2.md.
+forward_fire = 0
+; Which of the game's functions each WaW button turns on, by the game's own
+; numbering (0 = primary fire). -1 = that button is not passed on. WaW's
+; buttons are its own attack, aim and reload, however the player has those
+; bound there.
+fire_function = 0
+alt_fire_function = -1
+reload_function = -1
 ; The game's view-projection matrix (4 rows of 4 floats), read only, to work
 ; out the field of view it is drawing with. The log says whether that matches
 ; WaW's whenever either changes.
@@ -95,6 +108,13 @@ poke =
 ; e.g.    BattlefrontII.exe+0x1A296B0 > 0x3C8 = f32 0.5   (aim 29 degrees up)
 hold1 =
 hold2 =
+; Hold WaW buttons down without WaW: 1 = fire, 2 = alt fire, 4 = reload,
+; added together. Needs forward_fire = 1.
+force_buttons = 0
+; Hold game functions on directly, one bit each (0x1 = function 0, 0x2 =
+; function 1, 0x4 = function 2 ...), for finding out which number does what.
+; Needs forward_fire = 1.
+force_functions = 0
 ; 1 = hook the Direct3D device's drawing calls so a frame can be recorded
 ; (read at start-up; publishing a picture switches it on by itself).
 frame_probe = 0
