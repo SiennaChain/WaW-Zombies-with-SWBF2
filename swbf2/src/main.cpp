@@ -45,6 +45,12 @@ CoordMapping LoadMapping(const Config& config) {
 // One value to put at one address, as written in wawbf.ini:
 //   <address> = <u8|u32|f32> <value> [<second value>]
 // The second value is only used by a toggle.
+// Things the player can ask the arena's mission script for with a key. The
+// bridge cannot call the script; it writes a value where the script looks
+// (the unit's health, which nothing else uses: see swbf2/arena/WAW_arena.lua).
+const int kAsks = 2;
+const char* const kAskNames[kAsks] = {"next_hero", "next_villain"};
+
 struct ValueSpec {
   std::string text;  // as written; empty = not set
   AddressSpec address;
@@ -140,7 +146,10 @@ struct Settings {
   bool keepRunning = false;
   bool hidden = false;
   bool forwardFire = false;      // pull this game's trigger when the WaW player pulls theirs
+  ValueSpec asks[kAsks];         // what to write to ask the mission script for each of kAskNames
+  int askKeys[kAsks] = {};       // and the key that asks (a Windows virtual-key code)
   input::Functions functions;    // which of the game's functions each WaW button turns on
+  float zoomedBelow = 40.0f;     // the game counts as zoomed in when its vertical field of view is under this; 0 = not looked at
   CoordMapping mapping;
   int tickMs = 16;
 };
@@ -195,11 +204,17 @@ Settings LoadSettings(const Config& config) {
     std::snprintf(key, sizeof(key), "hold%d", i + 1);
     if (ParseValueSpec(key, config.GetString("debug", key), s.holds[i])) ++holds;
   }
+  for (int i = 0; i < kAsks; ++i) {
+    const std::string key = std::string(kAskNames[i]) + "_key";
+    s.askKeys[i] = config.GetInt("swbf2", key.c_str(), 0);
+    ParseValueSpec(kAskNames[i], config.GetString("swbf2", kAskNames[i]), s.asks[i]);
+  }
   s.keepRunning = config.GetInt("swbf2", "keep_running", 0) != 0;
   s.hidden = config.GetInt("swbf2", "hidden", 0) != 0;
   s.forwardFire = config.GetInt("swbf2", "forward_fire", 0) != 0;
   s.functions.fire = config.GetInt("swbf2", "fire_function", s.functions.fire);
-  s.functions.altFire = config.GetInt("swbf2", "alt_fire_function", s.functions.altFire);
+  s.functions.aim = config.GetInt("swbf2", "aim_function", s.functions.aim);
+  s.zoomedBelow = config.GetFloat("swbf2", "zoomed_below_fov", s.zoomedBelow);
   s.functions.reload = config.GetInt("swbf2", "reload_function", s.functions.reload);
   input::SetFunctions(s.functions);
   s.haveViewProjection = config.GetAddress("swbf2", "view_projection", s.viewProjection);
@@ -523,6 +538,23 @@ void ApplyToggle(const ValueSpec& toggle) {
   }
 }
 
+// [swbf2] next_hero and the like: leaves the mission script its message. Like
+// everything else written through the unit's pointer, only when what the
+// pointer leads to is a soldier.
+void Ask(const Settings& s, int which) {
+  const ValueSpec& ask = s.asks[which];
+  if (!s.havePosition || !IsUnit(s, mem::Resolve(s.position))) {
+    log::Info("%s: there is no unit to ask through", kAskNames[which]);
+    return;
+  }
+  const uintptr_t address = mem::Resolve(ask.address);
+  if (address && WriteValue(ask, address, ask.value)) {
+    log::Info("%s: asked", kAskNames[which]);
+  } else {
+    log::Error("%s: could not write %s at 0x%p", kAskNames[which], TypeName(ask), reinterpret_cast<void*>(address));
+  }
+}
+
 // This game's vertical field of view in degrees, or 0 if it cannot be read.
 //
 // The view-projection matrix is four rows of four floats. The first three
@@ -577,12 +609,29 @@ void ForwardButtons(SharedBlock* block) {
   input::SetButtons(buttons);
 }
 
+// Tells the input hooks whether the game is zoomed in, which they need for
+// working its zoom from WaW's aim. Read off the field of view the game is
+// drawing with: zooming is the one thing that narrows it. An answer has to
+// stand for a few frames before it is passed on, so that one odd frame does
+// not press a button.
+void TellZoom(const Settings& s) {
+  static int last = -1, same = 0, told = -1;
+  const float fov = s.zoomedBelow > 0 ? OwnFovDegrees(s) : 0;
+  const int zoomed = fov > 0 ? (fov < s.zoomedBelow ? 1 : 0) : -1;
+  same = zoomed == last ? same + 1 : 0;
+  last = zoomed;
+  if (same < 3 || zoomed == told) return;
+  told = zoomed;
+  input::SetZoomed(zoomed);
+}
+
 void BridgeFrame() {
   ++g_frames;
   std::lock_guard<std::mutex> lock(g_mutex);
   g_following = Follow(g_settings, g_block);
   Hold(g_settings);
   ForwardButtons(g_block);
+  TellZoom(g_settings);
 }
 
 void BridgeMain(HMODULE self) {
@@ -620,6 +669,7 @@ void BridgeMain(HMODULE self) {
   bool peerWasAlive = false;
   bool wasRendering = false;
   bool toggleKeyWasDown = false;
+  bool askKeyWasDown[kAsks] = {};
   uint32_t lastFrames = 0;
   DWORD lastFrameSeen = 0;
   DWORD lastReport = 0;
@@ -668,6 +718,12 @@ void BridgeMain(HMODULE self) {
                                (GetAsyncKeyState(settings.viewToggleKey) & 0x8000) != 0;
     if (toggleKeyDown && !toggleKeyWasDown) ApplyToggle(settings.viewToggle);
     toggleKeyWasDown = toggleKeyDown;
+    for (int i = 0; i < kAsks; ++i) {
+      const bool down = settings.askKeys[i] && settings.asks[i].type &&
+                        (GetAsyncKeyState(settings.askKeys[i]) & 0x8000) != 0;
+      if (down && !askKeyWasDown[i]) Ask(settings, i);
+      askKeyWasDown[i] = down;
+    }
 
     state.flags = following ? kBfFollowing : 0;
     const uintptr_t positionAddr = settings.havePosition ? mem::Resolve(settings.position) : 0;

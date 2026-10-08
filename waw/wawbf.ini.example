@@ -18,7 +18,7 @@ view_angles = CoDWaW.exe+0x14ED18C
 ; matches.
 view_fov = CoDWaW.exe+0x3120348
 ; 1 = tell the SWBF2 bridge which of its buttons the player is holding: fire,
-; alt fire (aim) and reload. What SWBF2 does with them is set on its side:
+; aim and reload. What SWBF2 does with them is set on its side:
 ; [swbf2] forward_fire.
 forward_buttons = 1
 ; Where this game records each of those as held: one byte, not zero while it
@@ -31,7 +31,7 @@ forward_buttons = 1
 ; Left empty, a button is read from the mouse or keyboard instead (left
 ; button, right button, R), which only suits a player who has it bound there.
 held_fire = CoDWaW.exe+0x2C0FE5C
-held_alt_fire = CoDWaW.exe+0x2C0FDBC
+held_aim = CoDWaW.exe+0x2C0FDBC
 held_reload = CoDWaW.exe+0x2C0FED4, CoDWaW.exe+0x2C0FEE8
 ; The byte behind this game's cg_drawGun setting (1 = draw the player's gun).
 ; While SWBF2's weapon is being drawn over the picture the bridge keeps it 0,

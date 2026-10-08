@@ -30,27 +30,63 @@ const int kFunctionCount = 30;                  // the bits above these are not 
 // down, which the game tells by comparing with the update before.
 const uint32_t kHeldFunctions = 0x20001EFF;
 
+// Pressing zoom. A press lasts this many controller updates; the zoom then
+// takes about a quarter of a second to move, and is not pressed again before
+// it has had that long. If two presses have not got the game where WaW's aim
+// wants it (a unit with nothing to zoom, or none at all) it is left alone
+// until WaW's aim changes again.
+const int kAimPressUpdates = 2;
+const DWORD kAimSettleMs = 400;
+const int kAimTries = 2;
+
 std::atomic<bool> g_enabled{false};
 std::atomic<uint32_t> g_buttons{0};          // from WaW
 std::atomic<uint32_t> g_forced{0};           // [debug] force_buttons
 std::atomic<uint32_t> g_forcedFunctions{0};  // [debug] force_functions
-std::atomic<int> g_fire{0}, g_altFire{-1}, g_reload{-1};
+std::atomic<int> g_fire{0}, g_aim{-1}, g_reload{-1};
+std::atomic<int> g_zoomed{-1};
 BYTE* g_player = nullptr;
 bool g_installed = false, g_failed = false;
 
 // For the log: how often the game updated the player's controller, and in how
 // many of those a function was turned on.
-std::atomic<uint32_t> g_updates{0}, g_turnedOn{0};
+std::atomic<uint32_t> g_updates{0}, g_turnedOn{0}, g_aimPresses{0};
 
 uint32_t Bit(int function) { return function >= 0 && function < kFunctionCount ? 1u << function : 0; }
 
-uint32_t Wanted() {
-  const uint32_t buttons = g_buttons.load(std::memory_order_relaxed) | g_forced.load(std::memory_order_relaxed);
+// The functions that are simply on while their button is.
+uint32_t Wanted(uint32_t buttons) {
   uint32_t functions = g_forcedFunctions.load(std::memory_order_relaxed) & ((1u << kFunctionCount) - 1);
   if (buttons & kWawButtonFire) functions |= Bit(g_fire.load(std::memory_order_relaxed));
-  if (buttons & kWawButtonAltFire) functions |= Bit(g_altFire.load(std::memory_order_relaxed));
   if (buttons & kWawButtonReload) functions |= Bit(g_reload.load(std::memory_order_relaxed));
   return functions;
+}
+
+// Zoom's bit for this update, or 0: on while a press is being made, and a
+// press is begun when the game is not zoomed the way WaW's aim is held.
+uint32_t AimPress(bool held) {
+  static bool was = false;
+  static int tries = kAimTries, pressing = 0;
+  static DWORD lastPress = 0;
+  if (held != was) {
+    was = held;
+    tries = 0;
+  }
+  const uint32_t bit = Bit(g_aim.load(std::memory_order_relaxed));
+  if (!bit) return 0;
+  if (pressing > 0) {
+    --pressing;
+    return bit;
+  }
+  const int zoomed = g_zoomed.load(std::memory_order_relaxed);
+  const bool wrong = zoomed < 0 ? tries == 0 : (zoomed != 0) != held;
+  const DWORD now = GetTickCount();
+  if (!wrong || tries >= kAimTries || now - lastPress < kAimSettleMs) return 0;
+  tries = zoomed < 0 ? kAimTries : tries + 1;
+  lastPress = now;
+  pressing = kAimPressUpdates - 1;
+  ++g_aimPresses;
+  return bit;
 }
 
 // Runs on the game's own thread, in the middle of its input update, once for
@@ -60,8 +96,11 @@ void __cdecl OnControllerUpdate(BYTE* controller) {
   if (controller != g_player) return;
   ++g_updates;
   static uint32_t before = 0;
-  const uint32_t wanted = g_enabled.load(std::memory_order_relaxed) ? Wanted() : 0;
-  const uint32_t on = (wanted & kHeldFunctions) | (wanted & ~before & ~kHeldFunctions);
+  const bool enabled = g_enabled.load(std::memory_order_relaxed);
+  const uint32_t buttons = g_buttons.load(std::memory_order_relaxed) | g_forced.load(std::memory_order_relaxed);
+  const uint32_t wanted = enabled ? Wanted(buttons) : 0;
+  uint32_t on = (wanted & kHeldFunctions) | (wanted & ~before & ~kHeldFunctions);
+  if (enabled) on |= AimPress((buttons & kWawButtonAim) != 0);
   before = wanted;
   if (!on || !controller[kControllerInUse]) return;
   BYTE* state = *reinterpret_cast<BYTE**>(controller + kControllerState);
@@ -153,27 +192,30 @@ void Tick(bool enabled) {
   if (g_installed && now - lastReport >= 5000) {
     lastReport = now;
     const uint32_t updates = g_updates.exchange(0), turnedOn = g_turnedOn.exchange(0);
+    const uint32_t aimPresses = g_aimPresses.exchange(0);
     // Said when the picture changes, not every five seconds.
     static uint32_t lastShape = ~0u;
-    const uint32_t shape = (updates ? 1u : 0) | (turnedOn ? 2u : 0);
+    const uint32_t shape = (updates ? 1u : 0) | (turnedOn ? 2u : 0) | (aimPresses ? 4u : 0);
     if (shape != lastShape) {
       lastShape = shape;
-      log::Info("forward_fire, last 5 s: the game updated the player's controller %u times, and a function was turned on in %u of them",
-                updates, turnedOn);
+      log::Info("forward_fire, last 5 s: the game updated the player's controller %u times, a function was turned on in %u of them, and zoom was pressed %u times",
+                updates, turnedOn, aimPresses);
     }
   }
 }
 
 void SetFunctions(const Functions& functions) {
-  const int fire = g_fire.exchange(functions.fire), altFire = g_altFire.exchange(functions.altFire),
+  const int fire = g_fire.exchange(functions.fire), aim = g_aim.exchange(functions.aim),
             reload = g_reload.exchange(functions.reload);
   static bool said = false;
-  if (!said || fire != functions.fire || altFire != functions.altFire || reload != functions.reload) {
+  if (!said || fire != functions.fire || aim != functions.aim || reload != functions.reload) {
     said = true;
-    log::Info("forward_fire: fire is game function %d, alt fire %d, reload %d (-1: not forwarded)", functions.fire,
-              functions.altFire, functions.reload);
+    log::Info("forward_fire: fire is game function %d, aim (zoom) %d, reload %d (-1: not forwarded)", functions.fire,
+              functions.aim, functions.reload);
   }
 }
+
+void SetZoomed(int zoomed) { g_zoomed.store(zoomed, std::memory_order_relaxed); }
 
 void SetButtons(uint32_t buttons) {
   const uint32_t before = g_buttons.exchange(buttons);

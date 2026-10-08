@@ -108,7 +108,7 @@ enum WawFlags : uint32_t {
 // game: the weapon is SWBF2's, so pulling its trigger is too.
 enum WawButtons : uint32_t {
   kWawButtonFire = 1u << 0,     // WaW's attack
-  kWawButtonAltFire = 1u << 1,  // WaW's aim down the sights
+  kWawButtonAim = 1u << 1,      // WaW's aim down the sights
   kWawButtonReload = 1u << 2,
 };
 

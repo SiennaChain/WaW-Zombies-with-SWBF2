@@ -98,7 +98,32 @@ anchor pair pins a spot in the WaW map to a spot in SWBF2's hidden arena.
 Scale, handedness and yaw convention are config values until Phase 0
 measures them (`docs/PHASE0.md`).
 
-## Weapons in the box and on walls
+## Weapons: the character's own (proposed 2026-10-08)
+
+A simpler plan than the one in the next section, proposed by the user after
+playing with fire, aim and reload working, and the one to build towards
+unless that changes:
+
+- **No Battlefront weapons in the box or on the walls.** A character keeps
+  the weapons it has in SWBF2. Han Solo has his pistol; a clone has a rifle
+  and a pistol.
+- **WaW is given the closest match.** Whatever the SWBF2 character is
+  holding, the WaW player is handed the WaW weapon most like it, so that the
+  shot WaW fires and the one SWBF2 shows agree in kind, rate and reload.
+- **The walls sell ammunition**, not weapons.
+- **The character is changed with a key**, cycling through the heroes with
+  one and the villains with another, instead of through SWBF2's spawn
+  screen. Built: `docs/PHASE2.md`.
+- **Third person** for the characters it suits, lightsaber heroes above all.
+
+What it saves: SWBF2 never has to be given a weapon it does not already have
+on that character, and nothing has to be invented for each pairing of a WaW
+weapon with a SWBF2 one. What it needs: the WaW script mod (to hand out the
+matching weapon, to turn wall buys into ammunition, and to take the weapons
+out of the box), and a way for the bridge to tell that script which
+character is in play.
+
+## Weapons in the box and on walls (the earlier plan)
 
 The box and wall buys stay stock WaW GSC. Each Battlefront weapon gets a
 **placeholder weapon** in WaW (e.g. `swbf2_dc15a`): a weapon file with the

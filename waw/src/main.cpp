@@ -40,7 +40,7 @@ struct Settings {
   bool haveFov = false;
   bool forwardButtons = true;
   // Where the game records each of SWBF2's buttons as held; empty = not known.
-  std::vector<AddressSpec> heldFire, heldAltFire, heldReload;
+  std::vector<AddressSpec> heldFire, heldAim, heldReload;
   AddressSpec drawGun;  // the byte behind cg_drawGun
   bool haveDrawGun = false;
   int tickMs = 16;
@@ -73,14 +73,14 @@ Settings LoadSettings(const Config& config) {
   s.haveFov = config.GetAddress("waw", "view_fov", s.fov);
   s.forwardButtons = config.GetInt("waw", "forward_buttons", 1) != 0;
   s.heldFire = LoadPlaces(config, "held_fire");
-  s.heldAltFire = LoadPlaces(config, "held_alt_fire");
+  s.heldAim = LoadPlaces(config, "held_aim");
   s.heldReload = LoadPlaces(config, "held_reload");
   s.haveDrawGun = config.GetAddress("waw", "draw_gun", s.drawGun);
   const auto source = [](const std::vector<AddressSpec>& places, const char* fallback) {
     return places.empty() ? fallback : "the game's own record";
   };
-  log::Info("buttons for SWBF2: fire from %s, alt fire from %s, reload from %s%s",
-            source(s.heldFire, "the left mouse button"), source(s.heldAltFire, "the right mouse button"),
+  log::Info("buttons for SWBF2: fire from %s, aim from %s, reload from %s%s",
+            source(s.heldFire, "the left mouse button"), source(s.heldAim, "the right mouse button"),
             source(s.heldReload, "the R key"), s.forwardButtons ? "" : " (forward_buttons = 0: none are sent)");
   if (!s.haveOrigin) {
     log::Info("[waw] player_origin not set: heartbeat only (see docs/PHASE0.md)");
@@ -129,7 +129,7 @@ uint32_t HeldButtons(const Settings& s) {
     const std::vector<AddressSpec>& places;
     int fallbackKey;
   } buttons[] = {{kWawButtonFire, s.heldFire, VK_LBUTTON},
-                 {kWawButtonAltFire, s.heldAltFire, VK_RBUTTON},
+                 {kWawButtonAim, s.heldAim, VK_RBUTTON},
                  {kWawButtonReload, s.heldReload, 'R'}};
   uint32_t held = 0;
   for (const auto& button : buttons) {

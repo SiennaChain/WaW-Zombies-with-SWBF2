@@ -8,10 +8,15 @@
 -- World at War owns the fight; this game only has to keep a character
 -- standing there.
 --
--- A roster (WAWg_con.lua and its siblings) says who can be picked on the
--- spawn screen. The screen has room for ten classes a team and there are two
--- teams, so one roster holds twenty characters at most; that is why there is
--- more than one.
+-- A roster (WAWg_con.lua and its siblings) says who the player can be. The
+-- spawn screen has room for ten classes a team and there are two teams, so
+-- one roster holds twenty characters at most; that is why there is more than
+-- one.
+--
+-- The player does not have to use that screen. The mission puts them in the
+-- world as team 1's first character as soon as it starts, and the bridge can
+-- ask for the next character of either team at any time (F10 and F11 by
+-- default): see Look, below.
 --
 --   ArenaInit{
 --       era   = "gcw", "cw" or "both",  -- which eras' sounds and voices to load
@@ -34,6 +39,105 @@ local DEF = 2
 -- bridge's log says whether they do.
 local FIELD_OF_VIEW = 65
 
+-- How many magazines a soldier carries for its first weapon (the stock
+-- rifleman has four).
+local SPARE_MAGAZINES = 99
+
+-- The player's unit cannot be hurt: World at War decides that. So its health
+-- is free to carry a message. The bridge cannot call into this script, but it
+-- can write to the unit, and this script can read the unit's health; the
+-- bridge asks for a change of character by setting the health to one of
+-- these, and a timer here looks for it. Both are still far more than
+-- anything could take away. (The same numbers are in wawbf.ini.)
+local FULL_HEALTH = 1e+37
+local ASK_NEXT = { 9e+36, 8e+36 }  -- the next of team 1's characters, the next of team 2's
+local LOOK_EVERY = 0.1             -- seconds
+local GIVE_UP_AFTER = 30           -- looks to wait for the old unit to go before forgetting the request
+
+-- Where the player appears when there is no unit to take the place of.
+local SPAWN_PATH = "cp1_spawn"
+
+local arena = nil        -- the roster ArenaInit was given
+local chosen = { 1, 1 }  -- which of each team's characters the player is, or will be next
+local waiting = nil      -- { team =, place =, looks = } while the old unit goes away
+
+-- The shipped game keeps no log, so each step leaves a string in memory that
+-- tools/probe/bfluatrace.ps1 can look for.
+local function Trace(step)
+    gWawArenaTrace = "wawbf-trace:arena-" .. step
+end
+
+-- The player's character and its team. A character exists whether or not it
+-- is in the world; it is nil only until the player is on a team.
+local function FindHuman()
+    for team = ATT, DEF do
+        for member = 0, GetTeamSize(team) - 1 do
+            local character = GetTeamMember(team, member)
+            if character and IsCharacterHuman(character) then
+                return character, team
+            end
+        end
+    end
+end
+
+-- Puts the player in the world as its team's chosen character.
+local function Appear(character, team, place)
+    local class = arena.teams[team].classes[chosen[team]]
+    Trace("appear-" .. class)
+    SelectCharacterTeam(character, team)
+    SelectCharacterClass(character, class)
+    SpawnCharacter(character, place or GetPathPoint(SPAWN_PATH, 0))
+end
+
+-- Which team's next character the bridge is asking for, if it is.
+local function Asked(unit)
+    local health, most = GetObjectHealth(unit)
+    if most and health and most < health then
+        health = most
+    end
+    if not health or health > (FULL_HEALTH + ASK_NEXT[1]) / 2 then
+        return nil
+    end
+    return health > (ASK_NEXT[1] + ASK_NEXT[2]) / 2 and ATT or DEF
+end
+
+-- The player is always in the world: with no unit (the mission has just
+-- started) it is given one, without the spawn screen. When the bridge asks,
+-- the unit is replaced, where it stands, by the next character of the team
+-- asked for. Asking for the other team's goes to the one last used there.
+local function Look()
+    local character, team = FindHuman()
+    if not character then
+        return
+    end
+    local unit = GetCharacterUnit(character)
+    if not unit then
+        local to = waiting or { team = team }
+        waiting = nil
+        Appear(character, to.team, to.place)
+    elseif waiting then
+        waiting.looks = waiting.looks + 1
+        if waiting.looks > GIVE_UP_AFTER then
+            Trace("still-here")
+            waiting = nil
+            SetProperty(unit, "CurHealth", FULL_HEALTH)
+        end
+    else
+        local asked = Asked(unit)
+        if asked then
+            if asked == team then
+                chosen[asked] = chosen[asked] + 1
+                if chosen[asked] > table.getn(arena.teams[asked].classes) then
+                    chosen[asked] = 1
+                end
+            end
+            Trace("asked-" .. asked)
+            waiting = { team = asked, place = GetEntityMatrix(unit), looks = 0 }
+            KillObject(unit)
+        end
+    end
+end
+
 function ArenaPostLoad()
 
     -- Only the player. The command posts are still there to spawn from, but
@@ -49,16 +153,41 @@ function ArenaPostLoad()
             if IsCharacterHuman(character) then
                 local unit = GetCharacterUnit(character)
                 if unit then
-                    SetProperty(unit, "MaxHealth", 1e+37)
-                    SetProperty(unit, "CurHealth", 1e+37)
+                    SetProperty(unit, "MaxHealth", FULL_HEALTH)
+                    SetProperty(unit, "CurHealth", FULL_HEALTH)
                 end
             end
         end
     )
 
+    -- A mistake in Look must not stop the looking.
+    local timer = CreateTimer("waw_look")
+    SetTimerValue(timer, LOOK_EVERY)
+    StartTimer(timer)
+    OnTimerElapse(
+        function(elapsed)
+            local ok, problem = pcall(Look)
+            if not ok then
+                Trace("problem-" .. tostring(problem))
+            end
+            SetTimerValue(elapsed, LOOK_EVERY)
+            StartTimer(elapsed)
+        end,
+        timer
+    )
+    Trace("looking")
+
 end
 
 function ArenaInit(roster)
+
+    arena = roster
+
+    -- No "pick a team" screen: the player starts on team 1 and changes side,
+    -- like character, by asking.
+    if ForceHumansOntoTeam1 then
+        ForceHumansOntoTeam1()
+    end
 
     ReadDataFile("ingame.lvl")
 
@@ -98,6 +227,13 @@ function ArenaInit(roster)
             AddUnitClass(team, class, 1, 2)
             SetClassProperty(class, "FirstPersonFOV", FIELD_OF_VIEW)
             SetClassProperty(class, "ThirdPersonFOV", FIELD_OF_VIEW)
+            -- There is nothing in the arena to take ammunition from, and a
+            -- soldier that has shot its four magazines at zombies is left
+            -- with a weapon that does nothing. So it carries more magazines
+            -- than a session will use. (0 is the game's own "never runs
+            -- out" and also works, showing an infinity sign for the count;
+            -- reloading by hand has only been checked with a real number.)
+            SetClassProperty(class, "WeaponAmmo1", SPARE_MAGAZINES)
         end
     end
 

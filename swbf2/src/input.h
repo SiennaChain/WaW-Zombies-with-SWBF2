@@ -18,6 +18,11 @@
 // the game's behalf was tried first; it did nothing for a player whose fire
 // was on a controller.
 //
+// Fire and reload are on for as long as WaW's are held. Aim is different in
+// kind: WaW's is held, and SWBF2's zoom is pressed once to go in and once to
+// come out. So for aim the function is pressed, briefly, whenever the game is
+// not in the state WaW's button asks for; SetZoomed says which state it is in.
+//
 // Looking and moving are not input here: Phase 1 writes those into the game
 // directly.
 #pragma once
@@ -26,11 +31,11 @@
 
 namespace wawbf::input {
 
-// Which game function each WaW button turns on, by the game's own numbering;
+// Which game function each WaW button works, by the game's own numbering;
 // -1 to leave a button out.
 struct Functions {
   int fire = 0;
-  int altFire = -1;
+  int aim = -1;
   int reload = -1;
 };
 
@@ -43,6 +48,11 @@ void SetFunctions(const Functions& functions);
 
 // The WawButtons held down now, or 0 if WaW has gone quiet.
 void SetButtons(uint32_t buttons);
+
+// Whether the game is zoomed in now: 1, 0, or -1 for "cannot tell". Not
+// knowing, aim is pressed once each time WaW's changes, which stays right
+// only as long as nothing else zooms the game.
+void SetZoomed(int zoomed);
 
 // [debug] force_buttons: WawButtons held down regardless of WaW, for trying
 // this without anyone having to be in WaW.

@@ -61,13 +61,20 @@ hidden = 0
 ; (mouse, key or controller) or that its window is not the one in front. Can
 ; be switched live. See docs/PHASE2.md.
 forward_fire = 0
-; Which of the game's functions each WaW button turns on, by the game's own
-; numbering (0 = primary fire). -1 = that button is not passed on. WaW's
-; buttons are its own attack, aim and reload, however the player has those
-; bound there.
+; Which of the game's functions each WaW button works, by the game's own
+; numbering: 0 = primary fire, 5 = zoom, 7 = reload (docs/PHASE2.md).
+; -1 = that button is not passed on. WaW's buttons are its own attack, aim
+; and reload, however the player has those bound there.
 fire_function = 0
-alt_fire_function = -1
-reload_function = -1
+aim_function = 5
+reload_function = 7
+; Fire and reload are held on while WaW's are held. Zoom is not held in this
+; game but pressed, once to go in and once to come out, so for aim the bridge
+; presses it whenever the game is not zoomed the way WaW's aim is held. It
+; tells by the field of view (view_projection below has to be set): under
+; this many degrees top to bottom counts as zoomed in. 0 = do not look, and
+; press once each time WaW's aim changes.
+zoomed_below_fov = 40
 ; The game's view-projection matrix (4 rows of 4 floats), read only, to work
 ; out the field of view it is drawing with. The log says whether that matches
 ; WaW's whenever either changes.
@@ -80,6 +87,18 @@ view_projection = BattlefrontII.exe+0x3DE368
 ; view_toggle_key is a Windows virtual-key code: 0x78 = F9.
 view_toggle = BattlefrontII.exe+0x1AF9106 = u8 0 1
 view_toggle_key = 0x78
+; Changing character without the spawn screen, whichever window has the
+; keyboard. The arena's mission script does the changing; the bridge asks it
+; by writing a number where the script looks, which is the unit's health (the
+; unit cannot be hurt, so nothing else uses it). next_hero is the next of
+; team 1's characters, next_villain the next of team 2's; asking for the
+; other team's goes to the one last used there. The numbers must be the ones
+; in swbf2/arena/WAW_arena.lua. Same format as [debug] poke; the address is
+; the unit's health, found as docs/PHASE2.md says. 0x79 = F10, 0x7A = F11.
+next_hero = BattlefrontII.exe+0x1A296B0 > 0x24 = f32 9e36
+next_hero_key = 0x79
+next_villain = BattlefrontII.exe+0x1A296B0 > 0x24 = f32 8e36
+next_villain_key = 0x7A
 
 [mapping]
 ; How WaW space maps onto BF space - see protocol/wawbf_protocol.h.
@@ -108,7 +127,7 @@ poke =
 ; e.g.    BattlefrontII.exe+0x1A296B0 > 0x3C8 = f32 0.5   (aim 29 degrees up)
 hold1 =
 hold2 =
-; Hold WaW buttons down without WaW: 1 = fire, 2 = alt fire, 4 = reload,
+; Hold WaW buttons down without WaW: 1 = fire, 2 = aim, 4 = reload,
 ; added together. Needs forward_fire = 1.
 force_buttons = 0
 ; Hold game functions on directly, one bit each (0x1 = function 0, 0x2 =
