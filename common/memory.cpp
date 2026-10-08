@@ -40,7 +40,9 @@ namespace {
 // Writes one pointer-sized slot that normally lives in read-only memory.
 bool WriteSlot(void** slot, void* value) {
   DWORD protection = 0;
-  if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &protection)) return false;
+  // Executable as well as writable: the slot can share a page with code that
+  // another thread is running right now.
+  if (!VirtualProtect(slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &protection)) return false;
   *slot = value;
   VirtualProtect(slot, sizeof(void*), protection, &protection);
   return true;
@@ -69,6 +71,13 @@ void* PatchImport(const char* dll, const char* name, void* replacement) {
     }
   }
   return nullptr;
+}
+
+void* PatchVtable(void* object, int index, void* replacement) {
+  void** vtable = *reinterpret_cast<void***>(object);
+  void* previous = vtable[index];
+  if (previous == replacement) return nullptr;
+  return WriteSlot(&vtable[index], replacement) ? previous : nullptr;
 }
 
 }  // namespace wawbf::mem

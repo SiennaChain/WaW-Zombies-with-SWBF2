@@ -28,4 +28,9 @@ inline bool WriteFloat3(uintptr_t address, const float v[3]) {
 // the exe does not import it.
 void* PatchImport(const char* dll, const char* name, void* replacement);
 
+// Replaces one method of a COM object by overwriting its vtable slot, which
+// affects every object of that class. Returns the previous method, or null if
+// it was already `replacement` or could not be written.
+void* PatchVtable(void* object, int index, void* replacement);
+
 }  // namespace wawbf::mem

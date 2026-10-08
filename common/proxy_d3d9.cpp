@@ -9,12 +9,87 @@
 
 #include <string>
 
+#include <atomic>
+
 #include "bridge.h"
 #include "config.h"
+#include "log.h"
+#include "memory.h"
 
 namespace {
 
 HMODULE g_self = nullptr;
+
+// --- once-per-frame callback -------------------------------------------------
+// The game hands each finished frame to Direct3D from its own rendering
+// thread, after it has updated the world for that frame. Hooking that moment
+// is a place to act in step with the game without knowing anything about its
+// update loop.
+//
+// Games do it in different ways. Two calls are hooked and the better one seen
+// is used: the device's Present (Battlefront II), and failing that EndScene,
+// which a game may call more than once a frame, so BridgeFrame must not assume
+// exactly one call per frame.
+//
+// World at War presents through a swap chain instead of the device. Hooking
+// IDirect3DSwapChain9::Present crashed it at the first call, with the stack too
+// damaged for the crash log to run, and the reason was not found. Do not put
+// that hook back without finding out why. Vtable slots are from d3d9.h.
+const int kCreateDevice = 16;  // IDirect3D9
+const int kPresent = 17;       // IDirect3DDevice9
+const int kEndScene = 42;      // IDirect3DDevice9
+
+using CreateDeviceFn = HRESULT(WINAPI*)(void* self, UINT adapter, DWORD type, HWND focus,
+                                        DWORD behavior, void* parameters, void** device);
+using PresentFn = HRESULT(WINAPI*)(void* self, const RECT* source, const RECT* destination,
+                                   HWND window, const void* dirtyRegion);
+using EndSceneFn = HRESULT(WINAPI*)(void* self);
+
+CreateDeviceFn g_realCreateDevice = nullptr;
+PresentFn g_realPresent = nullptr;
+EndSceneFn g_realEndScene = nullptr;
+
+// Which hook is driving BridgeFrame: 0 none yet, 1 the device's Present,
+// 2 EndScene. Present wins once it has been seen.
+std::atomic<int> g_frameSource{0};
+
+void Frame(int source) {
+  int current = g_frameSource.load();
+  while ((current == 0 || source < current) && !g_frameSource.compare_exchange_weak(current, source)) {
+  }
+  if (g_frameSource.load() != source) return;
+  static std::atomic<int> announced{0};
+  if (announced.exchange(source) != source) {
+    wawbf::log::Info("frames are counted at %s", source == 1 ? "the device's Present" : "EndScene");
+  }
+  wawbf::BridgeFrame();
+}
+
+HRESULT WINAPI PresentHook(void* self, const RECT* source, const RECT* destination, HWND window,
+                           const void* dirtyRegion) {
+  Frame(1);
+  return g_realPresent(self, source, destination, window, dirtyRegion);
+}
+
+HRESULT WINAPI EndSceneHook(void* self) {
+  Frame(2);
+  return g_realEndScene(self);
+}
+
+HRESULT WINAPI CreateDeviceHook(void* self, UINT adapter, DWORD type, HWND focus, DWORD behavior,
+                                void* parameters, void** device) {
+  const HRESULT result = g_realCreateDevice(self, adapter, type, focus, behavior, parameters, device);
+  if (SUCCEEDED(result) && device && *device) {
+    if (void* previous = wawbf::mem::PatchVtable(*device, kPresent, &PresentHook)) {
+      g_realPresent = reinterpret_cast<PresentFn>(previous);
+    }
+    if (void* previous = wawbf::mem::PatchVtable(*device, kEndScene, &EndSceneHook)) {
+      g_realEndScene = reinterpret_cast<EndSceneFn>(previous);
+    }
+    wawbf::log::Info("Direct3D device created; frame hooks installed");
+  }
+  return result;
+}
 
 HMODULE RealD3D9() {
   static HMODULE real = [] {
@@ -66,7 +141,13 @@ extern "C" {
 void* WINAPI Direct3DCreate9(UINT sdkVersion) {
   using Fn = void*(WINAPI*)(UINT);
   auto fn = Real<Fn>("Direct3DCreate9");
-  return fn ? fn(sdkVersion) : nullptr;
+  void* d3d = fn ? fn(sdkVersion) : nullptr;
+  if (d3d) {
+    if (void* previous = wawbf::mem::PatchVtable(d3d, kCreateDevice, &CreateDeviceHook)) {
+      g_realCreateDevice = reinterpret_cast<CreateDeviceFn>(previous);
+    }
+  }
+  return d3d;
 }
 
 HRESULT WINAPI Direct3DCreate9Ex(UINT sdkVersion, void** out) {

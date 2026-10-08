@@ -10,12 +10,55 @@ tick_hz = 60
 ; Found for the Steam exe listed in docs/PHASE0.md (step 4). It is the unit
 ; the camera follows, which is the player's while they are alive.
 player_position = BattlefrontII.exe+0x1A296B0 > 0x0
-; 1 = move the BF unit to wherever the WaW player is (Phase 0 exit test).
+; How to tell that player_position really is a unit's position right now.
+; A soldier object starts with the address of its class (unit_type), and its
+; position is unit_position_offset bytes in. Nothing is ever written unless
+; this matches, because while the player is dead player_position points at
+; something else, and overwriting that crashes the game.
+unit_type = BattlefrontII.exe+0x39D114
+unit_position_offset = 0x120
+; Where the unit's velocity is (3 floats, metres per second, same formats).
+; Optional. When set, it is replaced every frame along the axes being
+; followed, so speed the game still thinks the unit has cannot build up:
+; with zero, or with the WaW player's own speed if follow_velocity = 1.
+player_velocity = BattlefrontII.exe+0x1A296B0 > 0x3BC
+; How far up or down the unit aims: one float, radians, positive looking up.
+; The game works the aim direction and the camera out from it.
+aim_pitch = BattlefrontII.exe+0x1A296B0 > 0x3C8
+; 1 = move the BF unit to wherever the WaW player is.
 follow = 0
+; 1 = give the unit the WaW player's speed instead of none, so the game has
+; something to choose its animation from. Needs player_velocity.
+follow_velocity = 0
+; 1 = aim up and down with the WaW player. Needs aim_pitch.
+follow_pitch = 0
+; 0 = follow on the ground plane only and leave the unit's height to SWBF2,
+; so it stands on SWBF2's ground. 1 = take height from WaW as well.
+follow_height = 0
+; 1 = turn the unit to face where the WaW player is looking. The unit's
+; transform is the 4x4 ending at player_position, and its direction rows are
+; rewritten every frame. The log says how often the game kept them.
+follow_facing = 0
+; How far behind "now" the WaW player is placed, in milliseconds. The two
+; games draw at different rates; the unit is placed between the two newest
+; WaW samples at this delay, which is what keeps it from stuttering. About
+; one WaW frame is right. 0 = always run ahead of the newest sample.
+follow_delay_ms = 12
+; Optional: other places that hold a copy of the unit's forward direction,
+; as offsets from player_position, written too. Candidates from the recording
+; in docs: 0x208, 0x428.
+facing_extra =
 ; 1 = keep a match playing when the game's window is not the focused one.
 ; Without it the match pauses as soon as you click another window. Needs
 ; windowed mode (/win). Can be switched live.
 keep_running = 0
+; Flips a setting between two values each time a key is pressed, whichever
+; window has the keyboard. Meant for first / third person, which the game
+; only offers in its pause menu. tools/probe/bftoggle.ps1 finds the address.
+; Format: <address> = <u8|u32|f32> <one value> <the other value>
+; view_toggle_key is a Windows virtual-key code: 0x78 = F9.
+view_toggle =
+view_toggle_key = 0x78
 
 [mapping]
 ; How WaW space maps onto BF space - see protocol/wawbf_protocol.h.
@@ -24,10 +67,26 @@ anchor_waw = 0, 0, 0
 anchor_bf = 0, 0, 0
 ; BF units per WaW unit. 0.0254 assumes BF uses metres and WaW inches.
 scale = 0.0254
-; -1 if SWBF2 is right-handed, 1 if left-handed. Unverified: PHASE0.md step 6.
+; -1 is right; settled by eye, see docs/PHASE1.md. With 1 the unit turns left
+; when the player turns right.
 z_sign = -1
 yaw_sign = 1
 yaw_offset = 0
+; WaW's pitch grows looking down, SWBF2's looking up.
+pitch_sign = -1
+
+[debug]
+; Writes one value into the game, once, each time this line is changed.
+; For trying out a newly found address without building a new DLL.
+; Format: <address> = <u8|u32|f32> <value>
+; e.g.    BattlefrontII.exe+0x123456 > 0x10 = u8 1
+poke =
+; hold1 .. hold8: the same, but written every frame for as long as the line
+; is there, and only while the camera is on a live unit. The log says once a
+; second whether the game left the value alone, and what it put there if not.
+; e.g.    BattlefrontII.exe+0x1A296B0 > 0x3C8 = f32 0.5   (aim 29 degrees up)
+hold1 =
+hold2 =
 
 [proxy]
 chain =

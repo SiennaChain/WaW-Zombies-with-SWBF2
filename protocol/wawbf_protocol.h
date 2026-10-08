@@ -22,7 +22,7 @@ namespace wawbf {
 
 constexpr uint32_t kMagic = 0x46425757;  // "WWBF" in memory
 constexpr uint32_t kMagicInitializing = 1;
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;  // 2: WawPlayerState gained timeUs
 constexpr const wchar_t* kMappingName = L"Local\\WaWBF_v1";
 constexpr uint32_t kMappingSize = 0x10000;  // 64 KiB; later phases add rings
 constexpr uint32_t kHeartbeatTimeoutMs = 2000;
@@ -108,7 +108,17 @@ struct WawPlayerState {
   uint32_t flags;        // WawFlags
   float origin[3];       // player feet, WaW units (~inches), Z-up
   float viewAngles[3];   // pitch, yaw, roll in degrees (CoD convention)
+  // When origin and viewAngles were sampled, in microseconds on the system
+  // performance counter (the same clock in every process), low 32 bits. It
+  // wraps every ~71 minutes, so only ever compare two of these with
+  // ElapsedUs. The two games draw frames at different rates, so the reader
+  // needs this to place the WaW player at the instant it is drawing, not just
+  // at "the last sample"; without it the follower visibly stutters.
+  uint32_t timeUs;
 };
+
+// Signed time from `from` to `to`, correct across the wrap.
+inline int32_t ElapsedUs(uint32_t from, uint32_t to) { return static_cast<int32_t>(to - from); }
 
 enum BfFlags : uint32_t {
   kBfPositionValid = 1u << 0,
@@ -132,7 +142,7 @@ struct SharedBlock {
 
 static_assert(std::is_standard_layout<SharedBlock>::value, "layout must be fixed");
 static_assert(sizeof(PeerInfo) == 12, "PeerInfo layout changed: bump kVersion");
-static_assert(sizeof(WawPlayerState) == 32, "WawPlayerState changed: bump kVersion");
+static_assert(sizeof(WawPlayerState) == 36, "WawPlayerState changed: bump kVersion");
 static_assert(sizeof(BfPlayerState) == 32, "BfPlayerState changed: bump kVersion");
 static_assert(offsetof(SharedBlock, waw) == 0x40, "layout changed: bump kVersion");
 static_assert(offsetof(SharedBlock, bf) == 0x80, "layout changed: bump kVersion");
@@ -166,6 +176,7 @@ struct CoordMapping {
   float zSign = -1.0f;
   float yawSign = 1.0f;
   float yawOffsetDeg = 0.0f;
+  float pitchSign = -1.0f;  // WaW pitch grows looking down, SWBF2's looking up
 };
 
 inline Vec3 WawToBf(const Vec3& w, const CoordMapping& m) {
@@ -182,6 +193,18 @@ inline Vec3 BfToWaw(const Vec3& b, const CoordMapping& m) {
 
 inline float WawYawToBf(float yawDeg, const CoordMapping& m) {
   return yawDeg * m.yawSign + m.yawOffsetDeg;
+}
+
+// Degrees in, degrees out. WaW can hand over a pitch as 350 instead of -10.
+inline float WawPitchToBf(float pitchDeg, const CoordMapping& m) {
+  while (pitchDeg > 180.0f) pitchDeg -= 360.0f;
+  while (pitchDeg < -180.0f) pitchDeg += 360.0f;
+  return pitchDeg * m.pitchSign;
+}
+
+// A WaW velocity (units per second) as a SWBF2 one (metres per second).
+inline Vec3 WawVelocityToBf(const Vec3& w, const CoordMapping& m) {
+  return {w.x * m.scale, w.z * m.scale, w.y * m.scale * m.zSign};
 }
 
 }  // namespace wawbf

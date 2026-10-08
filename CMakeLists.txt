@@ -21,6 +21,7 @@ if(WIN32)
 
   add_library(wawbf_common STATIC
     common/config.cpp
+    common/crashlog.cpp
     common/log.cpp
     common/memory.cpp
     common/shm.cpp)
