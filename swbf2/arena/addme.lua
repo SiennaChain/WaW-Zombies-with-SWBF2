@@ -26,12 +26,14 @@ AddDownloadableContent("WAW","WAWg_eli",4)
 --
 -- On PC the menus go: profile screen (ifs_login), then the single player tab
 -- (ifs_sp_campaign). There is no main menu screen in between, which is where
--- the first attempt at this waited and so never ran. Two things are done:
+-- the first attempt at this waited and so never ran. Three things are done:
 --
---   1. On the profile screen, the profile that is already highlighted (the
+--   1. The legal and logo pages before the profile screen are given no time.
+--      (The logo videos before those are the game's own /nointro option.)
+--   2. On the profile screen, the profile that is already highlighted (the
 --      last one used) is logged in the way the game itself logs in a profile
 --      named on its command line.
---   2. On arriving at the single player tab, the arena is launched the way
+--   3. On arriving at the single player tab, the arena is launched the way
 --      Instant Action launches a map.
 --
 -- Both are reached by wrapping the two functions every screen calls by name,
@@ -74,6 +76,15 @@ if AUTO_START ~= "" and gIFShellScreenTemplate_fnEnter and gIFShellScreenTemplat
     local defaultEnter = gIFShellScreenTemplate_fnEnter
     gIFShellScreenTemplate_fnEnter = function(this, bFwd)
         defaultEnter(this, bFwd)
+        -- The legal and logo pages each wait a few seconds. Given no time and
+        -- no movie, the screen's own update walks straight through them.
+        if this == ifs_legal and gLegalScreenList then
+            for _, page in ipairs(gLegalScreenList) do
+                page.time = 0
+                page.movie = nil
+            end
+            Trace("legal-pages-skipped")
+        end
         if bFwd and not gWawArenaStarted and (this == ifs_sp_campaign or this == ifs_main) then
             gWawArenaStarted = 1
             LaunchArena()

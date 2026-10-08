@@ -304,25 +304,50 @@ as ordinary classes, the way the game's own hero assault mode does it.
 |---|---|---|
 | `WAWg_con` | Empire: six soldiers, Vader, the Emperor, Boba Fett | Alliance: six soldiers, Luke, Han, Leia, Chewbacca |
 | `WAWc_con` | Republic: six soldiers, Obi-Wan, Yoda, Mace Windu, Anakin | Separatists: six soldiers, Maul, Dooku, Grievous, Jango Fett |
-| `WAWg_eli` | all nine heroes | all eight villains |
+| `WAWg_eli` | eight heroes and a clone trooper | seven villains, a stormtrooper and a battle droid |
+
+The third began as the game's own hero assault line-up, nine heroes against
+eight villains. It lost Jango Fett by request and Ki-Adi-Mundi to make room
+(below), and gained the three soldiers.
+
+**A second limit: animation sets.** A mission can hold only so many
+different sets of animations, and the game's own seventeen heroes and
+villains use every place. One more and the game reads through a null pointer
+while the mission loads (`BattlefrontII.exe+0x23C2D0`, the same address every
+time). The function that fails sets up a table of 24 entries on its stack,
+which is presumably the number.
+
+It took a dozen load tests to see it, because nothing about it points at
+animations: the battle droid crashed the heroes roster but loaded in the
+Clone Wars one; each of the Empire's classes loaded alongside the
+Separatists' droids on its own, and all four together did not. What settles
+it is counting: a clone trooper or a stormtrooper costs nothing because they
+move like the human heroes already there; a battle droid moves like nothing
+else and costs a place; taking Jango Fett out frees nothing because Boba
+Fett uses the same set; taking out a hero with his own set makes the droid
+fit. Two things that were tried and did nothing are not in the scripts: a
+bigger `SoldierAnimation` memory pool, and a bigger memory figure in
+`AddDownloadableContent`. The mod tools' debug build of the game would have
+said what was wrong, but it asks for the original disc.
 
 **Starting by itself.** `build.ps1 -AutoStart gcw|cw|heroes` makes the game
-log in the last-used profile and go straight into that roster, with no menu
-to click through; the player lands on the spawn screen and picks a
-character. `-AutoStart none` leaves the game at its menu, with the arena in
-the Instant Action list like any map. While it starts by itself there is no
-reaching the menu: quitting the mission starts it again.
+skip its legal and logo pages, log in the last-used profile and go straight
+into that roster, with no menu to click through; the player lands on the
+spawn screen and picks a character. `-AutoStart none` leaves the game at its
+menu, with the arena in the Instant Action list like any map. While it
+starts by itself there is no reaching the menu: quitting the mission starts
+it again.
 
-Seen working once: the game was in the arena about 30 s after its window
-appeared. Whether the profile step ran unaided that time, or the player
-clicked first, was not confirmed.
+It works unaided: the spawn screen is up about 6 s after the game's process
+starts (about 30 s before the legal pages were skipped).
 
 How that works, and the mistake on the way: the script that registers a map
 runs in the same Lua state as the menus, so it can wrap the two functions
 every menu screen calls by name, its default "enter" and "update". On the
-profile screen it sets the two fields the game itself uses to log in a
-profile named on its command line; on the screen after that it launches the
-mission the way Instant Action does. The first version waited for the main
+legal screen it gives every page no time; on the profile screen it sets the
+two fields the game itself uses to log in a profile named on its command
+line; on the screen after that it launches the mission the way Instant
+Action does. The first version waited for the main
 menu screen (`ifs_main`) and never ran, because on PC there is no such
 screen in the path: after the profile screen comes the single player tab
 (`ifs_sp_campaign`). The shipped game keeps no script log, so the script

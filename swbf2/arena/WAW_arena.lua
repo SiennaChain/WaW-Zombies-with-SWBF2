@@ -14,7 +14,7 @@
 -- more than one.
 --
 --   ArenaInit{
---       era   = "gcw" or "cw",          -- which voices and music to load
+--       era   = "gcw", "cw" or "both",  -- which eras' sounds and voices to load
 --       sides = { { "all", { "all_inf_rifleman", ... } }, ... },  -- what to load, from which side
 --       teams = { { name = "imp", classes = { ... } },            -- team 1
 --                 { name = "all", classes = { ... } } },          -- team 2
@@ -74,10 +74,12 @@ function ArenaInit(roster)
     SetMemoryPoolSize ("Combo::DamageSample",6000)  -- should be ~8-12x #Combo::Attack
     SetMemoryPoolSize ("Combo::Deflect",100)     -- should be ~1x #combo
 
-    if roster.era == "cw" then
-        ReadDataFile("sound\\tat.lvl;tat2cw")
-    else
+    -- A roster that mixes eras asks for "both", so that nobody is silent.
+    if roster.era ~= "cw" then
         ReadDataFile("sound\\tat.lvl;tat2gcw")
+    end
+    if roster.era ~= "gcw" then
+        ReadDataFile("sound\\tat.lvl;tat2cw")
     end
 
     for _, side in ipairs(roster.sides) do
@@ -152,11 +154,19 @@ function ArenaInit(roster)
     else
         voiceSlow = OpenAudioStream("sound\\global.lvl", "all_unit_vo_slow")
         AudioStreamAppendSegments("sound\\global.lvl", "imp_unit_vo_slow", voiceSlow)
+        if roster.era == "both" then
+            AudioStreamAppendSegments("sound\\global.lvl", "rep_unit_vo_slow", voiceSlow)
+            AudioStreamAppendSegments("sound\\global.lvl", "cis_unit_vo_slow", voiceSlow)
+        end
         AudioStreamAppendSegments("sound\\global.lvl", "des_unit_vo_slow", voiceSlow)
         AudioStreamAppendSegments("sound\\global.lvl", "global_vo_slow", voiceSlow)
 
         voiceQuick = OpenAudioStream("sound\\global.lvl",  "all_unit_vo_quick")
         AudioStreamAppendSegments("sound\\global.lvl",  "imp_unit_vo_quick", voiceQuick)
+        if roster.era == "both" then
+            AudioStreamAppendSegments("sound\\global.lvl", "rep_unit_vo_quick", voiceQuick)
+            AudioStreamAppendSegments("sound\\global.lvl", "cis_unit_vo_quick", voiceQuick)
+        end
 
         OpenAudioStream("sound\\global.lvl",  "gcw_music")
     end
