@@ -16,15 +16,19 @@ the proof that a position written into SWBF2 is accepted.
 - [x] Nothing is written unless the target is confirmed to be a soldier
 - [x] Left and right settled by eye: `z_sign = -1` (see Findings)
 - [x] Movement looks smooth: "turns correctly and very smooth" (2026-10-08)
-- [ ] The unit animates (it slides in its idle pose). `follow_velocity` is
-      built and untested: see "The soldier object"
-- [ ] The unit aims up and down with the WaW player. `follow_pitch` is built
-      and untested
-- [ ] First / third person switched by a key. `view_toggle` is built; the
-      address is not found yet (`tools/probe/bftoggle.ps1`)
-- [ ] SWBF2's camera matches WaW's
-- [ ] SWBF2 hidden rather than merely behind another window
-- [ ] An empty arena with an invulnerable unit (needs the SWBF2 mod tools)
+- [x] The unit animates: with `follow_velocity = 1` it runs instead of
+      sliding in its idle pose (watched, 2026-10-08)
+- [x] The unit aims up and down with the WaW player (`follow_pitch = 1`;
+      watched, and exact by the numbers: see "Second test")
+- [x] First / third person switched by a key: F9 works (see "The view
+      setting")
+- [x] SWBF2's camera matches WaW's: it looks where the WaW player looks, with
+      the same field of view (the bridge logs 51.1 degrees for both in the
+      arena; see "The camera")
+- [x] SWBF2 hidden rather than merely behind another window: `hidden = 1`
+      (see "Hidden")
+- [x] An empty arena with an unkillable unit, which SWBF2 loads by itself
+      (see "The arena")
 
 ## How it works
 
@@ -178,6 +182,179 @@ Worked out from one 25 s recording of the player running about in SWBF2
 - **The player runs at 6.6 m/s in SWBF2** (5.0 to 9.5 across the recording)
   against 4.8 m/s in WaW, so a unit animated at WaW's speed will jog.
 
+## Second test (2026-10-08): speed and pitch
+
+`followtest.ps1 -Velocity 1 -Pitch 1`, 75 s, the WaW player walking 7,882
+units, turning 2,938 degrees and looking from 61 degrees up to 10 down.
+
+| | min | median | max |
+|---|---|---|---|
+| Position gap, WaW units | 0.0 | 1.4 | 7.6 |
+| Facing error, degrees | 0.0 | 0.0 | 0.0 |
+| Pitch error, degrees | 0.0 | 0.0 | 7.3 |
+
+- **Pitch is kept.** In every frame the angle read back was the one written
+  the frame before, and the unit's aim ran from 10 degrees down to 60.5 up as
+  the WaW player's did. `pitch_sign = -1` is right by the numbers. The 7.3 is
+  the two games being read a moment apart during a fast look.
+- **Speed is mostly kept.** Given about 4.8 m/s, the unit had about 3.9 m/s a
+  frame later: the game takes the speed and bleeds some off, as it would for
+  a unit nobody is steering. It also now moves the unit itself by that speed
+  each frame, before the bridge puts it back on the line, so the trace of
+  position changes shows two real steps a frame where it used to show one.
+  Whether that reads as smooth, and whether the game animates from it, has to
+  be judged by eye.
+- No death, no crash, and none of the single-sample outliers the first test
+  had. The three worst moments are now printed with their times, and all
+  three were the player sprinting at 6.5 to 7.9 m/s.
+
+## The view setting
+
+`BattlefrontII.exe+0x1AF9106`, one byte: 0 = third person, 1 = first person.
+Writing it switches the view at once: the camera went from 0.32 m from the
+unit's eyes to 3.20 m and back. It is what `view_toggle` is set to.
+
+How it was found, because the first step alone was not enough:
+
+1. `tools/probe/bftoggle.ps1` snapshots memory while the player switches the
+   view back and forth and keeps the bytes that held one value in every
+   third-person snapshot and another in every first-person one. The player
+   stood still while switching, so everything that depends on where the
+   camera is repeated exactly too: 38,518 bytes survived, 1,016 of them at
+   fixed addresses.
+2. `tools/probe/bfsettle.ps1` watches those while the game is played in one
+   view and drops any that stray. Forty seconds in third person and fifteen
+   in first left 44 fixed addresses, five of them plain 0 / 1 values.
+3. `tools/probe/bfviewtry.ps1` gives each of those its other value through
+   `[debug] poke` and measures the camera. The second one tried was it.
+
+`BattlefrontII.exe+0x1AC8106` sits in a block of the same shape 0x31000
+bytes earlier and follows the setting, but writing it does nothing; it is
+most likely the copy the options menu shows.
+
+## The camera
+
+Read from the view-projection matrix, which starts at
+`BattlefrontII.exe+0x3DE368`: four rows of four floats (x, y, depth and w
+rows; the length of the first three floats of the x and y rows is the
+projection's scale on that axis), then the camera's position at `+0x3DE3A8`.
+
+| | First person | Third person |
+|---|---|---|
+| Vertical field of view | 55.4 degrees | about 51.5 degrees |
+| Horizontal, at 16:9 | 86.1 degrees | about 81 degrees |
+| Camera, from the unit's origin | 0.30 m behind, 1.72 m up | 3.0 m behind along the view, 1.6 m up |
+| Camera pitch | the aim pitch exactly | the aim pitch less 10 degrees |
+
+So in first person the camera already looks exactly where the WaW player
+looks: heading from the body, pitch from the aim, both written every frame.
+That left the field of view.
+
+The two games turn out to measure it the same way: the angle across a 4:3
+picture, widened for a wider one. WaW's `cg_fov` is 65 by default. SWBF2's
+soldiers carry `FirstPersonFOV = 70` and `ThirdPersonFOV = 65` in their class
+files, which is exactly the 55.4 and 51.1 degrees measured above. So the
+arena sets both to 65 for every class it offers (`SetClassProperty`), and the
+two agree.
+
+It is checked rather than assumed. WaW keeps the view it is drawing as the
+tangents of half its horizontal and half its vertical angle, at
+`CoDWaW.exe+0x3120348` (`tools/probe/wawfov.ps1` finds it: it reads 0.8494 and
+0.4778, which is 80.7 by 51.1 degrees). The WaW bridge publishes them
+(`view_fov`, protocol version 3), the SWBF2 bridge works out its own from its
+view-projection matrix (`view_projection`), and logs both whenever either
+changes. In the arena: "field of view: WaW 51.1, SWBF2 51.1 degrees top to
+bottom: matched", in first and third person. A player who changes `cg_fov`
+will see the mismatch in the log; nothing follows it automatically yet.
+
+The eye heights differ (1.72 m here, 60 units = 1.52 m in WaW). For a
+first-person weapon drawn over WaW's picture that does not matter, since the
+weapon is placed relative to the camera.
+
+## Hidden
+
+With its window hidden the game goes on presenting frames (the bridge's frame
+hook never reports a gap) and the match goes on playing: in a live match
+`tools/probe/bfsim.ps1` counted 25 to 28 of 39 soldiers moving while hidden,
+against 29 of 40 before. Showing the window again brings it back as it was.
+
+`[swbf2] hidden = 1` does it from the bridge, and can be switched while the
+game runs. The game shows its window again by itself when a mission loads,
+so the bridge keeps it hidden rather than hiding it once. It is off by
+default: during development both windows are watched side by side.
+
+## The arena
+
+Until now every test ran in a live Instant Action match, where the unit got
+shot. The arena is a map with nothing in it for the hidden game to sit in:
+flat ground, no soldiers but the player's, no objective, so it never ends,
+and a unit given more health than anything can take off it.
+
+`swbf2/arena/build.ps1` builds it with the player's own copy of the
+Battlefront II mod tools and installs it as the addon `WAW`. Nothing of
+Battlefront's is in this repository: the world is the tools' blank template,
+and what is kept here is three small rosters, the script they share
+(`WAW_arena.lua`) and the script that registers the map (`addme.lua`).
+
+**Rosters.** The spawn screen has room for ten classes a team and there are
+two teams, so one mission offers twenty characters at most. Heroes are added
+as ordinary classes, the way the game's own hero assault mode does it.
+
+| Mission | Team 1 | Team 2 |
+|---|---|---|
+| `WAWg_con` | Empire: six soldiers, Vader, the Emperor, Boba Fett | Alliance: six soldiers, Luke, Han, Leia, Chewbacca |
+| `WAWc_con` | Republic: six soldiers, Obi-Wan, Yoda, Mace Windu, Anakin | Separatists: six soldiers, Maul, Dooku, Grievous, Jango Fett |
+| `WAWg_eli` | all nine heroes | all eight villains |
+
+**Starting by itself.** `build.ps1 -AutoStart gcw|cw|heroes` makes the game
+log in the last-used profile and go straight into that roster, with no menu
+to click through; the player lands on the spawn screen and picks a
+character. `-AutoStart none` leaves the game at its menu, with the arena in
+the Instant Action list like any map. While it starts by itself there is no
+reaching the menu: quitting the mission starts it again.
+
+Seen working once: the game was in the arena about 30 s after its window
+appeared. Whether the profile step ran unaided that time, or the player
+clicked first, was not confirmed.
+
+How that works, and the mistake on the way: the script that registers a map
+runs in the same Lua state as the menus, so it can wrap the two functions
+every menu screen calls by name, its default "enter" and "update". On the
+profile screen it sets the two fields the game itself uses to log in a
+profile named on its command line; on the screen after that it launches the
+mission the way Instant Action does. The first version waited for the main
+menu screen (`ifs_main`) and never ran, because on PC there is no such
+screen in the path: after the profile screen comes the single player tab
+(`ifs_sp_campaign`). The shipped game keeps no script log, so the script
+leaves a string in memory at each step and `tools/probe/bfluatrace.ps1`
+looks for them.
+
+**Three things that break the 2005 tools on a current machine**, all handled
+in `build.ps1` and explained there:
+
+- Their batch files paste `%PATH%` inside bracketed blocks, so a PATH with
+  "Program Files (x86)" in it kills them with "\Common was unexpected at
+  this time". They are run with a PATH of just Windows and themselves.
+- Their string files are each one closing bracket short, the string compiler
+  rejects them, the core level then fails to pack, and everything after it
+  fails for want of its list of contents: the map comes out 8 bytes long.
+- A pack that fails leaves an empty file that the tools then take for up to
+  date, so one failure sticks until the empty files are cleared.
+
+**Third test (2026-10-08), in the arena.** `followtest.ps1 -Velocity 1
+-Pitch 1`, 75 s, the WaW player walking 10,449 units and turning 2,720
+degrees.
+
+| | min | median | max |
+|---|---|---|---|
+| Position gap, WaW units | 0.0 | 2.3 | 7.1 |
+| Facing error, degrees | 0.0 | 0.0 | 0.0 |
+| Pitch error, degrees | 0.0 | 0.0 | 3.3 |
+| Unit height in SWBF2, metres | 0.0 | 0.0 | 0.0 |
+
+The unit never changed (nothing to kill it), stood on flat ground the whole
+time, and was judged by eye to look as good as before.
+
 ## Trying a field without rebuilding
 
 Each build of the DLL costs a restart of SWBF2 and a match started by hand,
@@ -198,15 +375,18 @@ so the bridge now carries what is needed to try things live, all from
 
 ## Not done yet, and why it matters
 
-- **Animation.** The game is given no movement input, so the unit glides in
-  its idle pose. `follow_velocity` gives it the WaW player's speed. Whether
-  the game animates from speed alone, or needs the stick values as well, is
-  the next thing to watch.
-- **Camera.** Needed before any of SWBF2's picture can be laid over WaW's
-  (Phase 2). In third person the game places it from the unit and its aim, so
-  getting the aim right may be all it takes. First person needs the view
-  setting found, and WaW's field of view matched.
-- **Hidden.** SWBF2 has only been run as a visible window behind another.
-- **Arena.** Tests run in a live instant action match, so the unit gets shot.
-  The design wants an empty map and an invulnerable unit, which means building
-  a mission with the SWBF2 mod tools.
+- **Animation is from speed alone.** Given the WaW player's speed the unit
+  runs; the stick values at 0x2C0 were not needed. Not looked at yet: whether
+  the animation matches the direction when strafing or backing up, and what
+  it does at WaW's sprint and crouch speeds.
+- **Following WaW's field of view.** It matches at WaW's default. If the
+  player changes `cg_fov`, or WaW zooms, SWBF2 does not follow; the log only
+  says so.
+- **One roster at a time.** Changing which twenty characters are on offer is
+  a rebuild of the addon and a restart of SWBF2. Choosing the character from
+  the WaW side belongs with the weapons work in later phases.
+- **The arena's look.** It still has the template's sky and ground. What the
+  background should be depends on how SWBF2's picture is cut out in Phase 2.
+- **Unkillable is by health, not by rule.** The unit is given an enormous
+  amount of health when it spawns. Nothing in the arena has tested that
+  against a fall or the edge of the map.

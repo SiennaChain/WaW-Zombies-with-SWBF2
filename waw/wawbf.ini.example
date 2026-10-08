@@ -12,6 +12,11 @@ tick_hz = 60
 ; exe build needs them found again.
 player_origin = CoDWaW.exe+0x14ED088
 view_angles = CoDWaW.exe+0x14ED18C
+; The field of view WaW is drawing with: two floats, the tangents of half
+; the horizontal and half the vertical angle (tools/probe/wawfov.ps1 finds
+; it). Optional. It is passed to the SWBF2 bridge, which logs whether its own
+; matches.
+view_fov = CoDWaW.exe+0x3120348
 
 [proxy]
 ; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.

@@ -52,12 +52,20 @@ facing_extra =
 ; Without it the match pauses as soon as you click another window. Needs
 ; windowed mode (/win). Can be switched live.
 keep_running = 0
+; 1 = do not show the game's window at all. It goes on drawing and playing.
+; Can be switched live; leave it 0 while there are menus to click through.
+hidden = 0
+; The game's view-projection matrix (4 rows of 4 floats), read only, to work
+; out the field of view it is drawing with. The log says whether that matches
+; WaW's whenever either changes.
+view_projection = BattlefrontII.exe+0x3DE368
 ; Flips a setting between two values each time a key is pressed, whichever
 ; window has the keyboard. Meant for first / third person, which the game
-; only offers in its pause menu. tools/probe/bftoggle.ps1 finds the address.
-; Format: <address> = <u8|u32|f32> <one value> <the other value>
+; only offers in its pause menu. The address below is that setting in the
+; Steam exe: 0 = third person, 1 = first person (docs/PHASE1.md says how it
+; was found). Format: <address> = <u8|u32|f32> <one value> <the other value>
 ; view_toggle_key is a Windows virtual-key code: 0x78 = F9.
-view_toggle =
+view_toggle = BattlefrontII.exe+0x1AF9106 = u8 0 1
 view_toggle_key = 0x78
 
 [mapping]

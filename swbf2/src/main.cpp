@@ -132,7 +132,10 @@ struct Settings {
   int viewToggleKey = 0;         // virtual-key code; 0 = none
   ValueSpec poke;                // [debug] poke, applied once each time it changes
   ValueSpec holds[kMaxHolds];    // [debug] hold1..hold8, written every frame
+  AddressSpec viewProjection;    // the game's view-projection matrix, to read its field of view from
+  bool haveViewProjection = false;
   bool keepRunning = false;
+  bool hidden = false;
   CoordMapping mapping;
   int tickMs = 16;
 };
@@ -188,6 +191,8 @@ Settings LoadSettings(const Config& config) {
     if (ParseValueSpec(key, config.GetString("debug", key), s.holds[i])) ++holds;
   }
   s.keepRunning = config.GetInt("swbf2", "keep_running", 0) != 0;
+  s.hidden = config.GetInt("swbf2", "hidden", 0) != 0;
+  s.haveViewProjection = config.GetAddress("swbf2", "view_projection", s.viewProjection);
   s.mapping = LoadMapping(config);
   log::Info("follow %d (height %s, velocity %s, facing %s +%d extra, pitch %s), %d held value(s), mapping: scale %.5f z_sign %.0f yaw_sign %.0f yaw_offset %.0f pitch_sign %.0f anchor_waw (%.1f %.1f %.1f) anchor_bf (%.2f %.2f %.2f)",
             s.follow ? 1 : 0, s.followHeight ? "from WaW" : "left to SWBF2",
@@ -508,6 +513,39 @@ void ApplyToggle(const ValueSpec& toggle) {
   }
 }
 
+// This game's vertical field of view in degrees, or 0 if it cannot be read.
+//
+// The view-projection matrix is four rows of four floats. The first three
+// floats of its second row are the camera's up direction scaled by the
+// projection, so their length is 1 / tan(half the vertical field of view).
+float OwnFovDegrees(const Settings& s) {
+  if (!s.haveViewProjection) return 0;
+  float rows[8];
+  if (!mem::Read(mem::Resolve(s.viewProjection), rows, sizeof(rows))) return 0;
+  const float scale = std::sqrt(rows[4] * rows[4] + rows[5] * rows[5] + rows[6] * rows[6]);
+  return scale > 0.01f && scale < 100.0f ? FovDegrees(1.0f / scale) : 0;
+}
+
+// Says, whenever either changes, what the two games' vertical fields of view
+// are. They have to agree before one picture can be laid over the other.
+void ReportFov(const Settings& s, const SharedBlock* block) {
+  static float lastOwn = 0, lastWaw = 0;
+  WawPlayerState waw{};
+  const bool haveWaw = block->waw.read(waw) && (waw.flags & kWawFovValid);
+  const float wawFov = haveWaw ? FovDegrees(waw.tanHalfFov[1]) : 0;
+  const float own = OwnFovDegrees(s);
+  if (own == 0 || wawFov == 0) return;
+  if (std::fabs(own - lastOwn) < 0.2f && std::fabs(wawFov - lastWaw) < 0.2f) return;
+  lastOwn = own;
+  lastWaw = wawFov;
+  const float apart = std::fabs(own - wawFov);
+  if (apart < 0.3f) {
+    log::Info("field of view: WaW %.1f, SWBF2 %.1f degrees top to bottom: matched", wawFov, own);
+  } else {
+    log::Info("field of view: WaW %.1f, SWBF2 %.1f degrees top to bottom: %.1f apart", wawFov, own, apart);
+  }
+}
+
 void ReportKept(const char* what, Kept& counts) {
   const uint32_t kept = counts.kept.exchange(0), replaced = counts.replaced.exchange(0);
   if (kept + replaced) {
@@ -551,7 +589,7 @@ void BridgeMain(HMODULE self) {
   DWORD lastReport = 0;
   for (;;) {
     shm.Beat();
-    focus::Tick(settings.keepRunning);
+    focus::Tick(settings.keepRunning, settings.hidden);
 
     const bool peerAlive = shm.PeerAlive();
     if (peerAlive != peerWasAlive) {
@@ -623,6 +661,7 @@ void BridgeMain(HMODULE self) {
       }
       ReportKept("facing", g_facing);
       ReportKept("pitch", g_pitch);
+      ReportFov(settings, shm.block());
       std::lock_guard<std::mutex> lock(g_mutex);
       if (g_speedFrames) {
         log::Info("speed: given %.1f m/s, the unit had %.1f m/s a frame later (average of %u frames)",

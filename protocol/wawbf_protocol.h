@@ -13,6 +13,7 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -22,7 +23,7 @@ namespace wawbf {
 
 constexpr uint32_t kMagic = 0x46425757;  // "WWBF" in memory
 constexpr uint32_t kMagicInitializing = 1;
-constexpr uint32_t kVersion = 2;  // 2: WawPlayerState gained timeUs
+constexpr uint32_t kVersion = 3;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov
 constexpr const wchar_t* kMappingName = L"Local\\WaWBF_v1";
 constexpr uint32_t kMappingSize = 0x10000;  // 64 KiB; later phases add rings
 constexpr uint32_t kHeartbeatTimeoutMs = 2000;
@@ -100,6 +101,7 @@ struct alignas(64) Header {
 enum WawFlags : uint32_t {
   kWawOriginValid = 1u << 0,
   kWawAnglesValid = 1u << 1,
+  kWawFovValid = 1u << 2,
 };
 
 // Game A -> game B. WaW is authoritative for player movement.
@@ -115,7 +117,14 @@ struct WawPlayerState {
   // needs this to place the WaW player at the instant it is drawing, not just
   // at "the last sample"; without it the follower visibly stutters.
   uint32_t timeUs;
+  // WaW's field of view as the engine keeps it: the tangents of half the
+  // horizontal and half the vertical angle. SWBF2's picture can only be laid
+  // over WaW's if both are drawn with the same one.
+  float tanHalfFov[2];
 };
+
+// The full angle, in degrees, that a tangent of half of it stands for.
+inline float FovDegrees(float tanHalf) { return 2.0f * 57.2957795f * std::atan(tanHalf); }
 
 // Signed time from `from` to `to`, correct across the wrap.
 inline int32_t ElapsedUs(uint32_t from, uint32_t to) { return static_cast<int32_t>(to - from); }
@@ -142,7 +151,7 @@ struct SharedBlock {
 
 static_assert(std::is_standard_layout<SharedBlock>::value, "layout must be fixed");
 static_assert(sizeof(PeerInfo) == 12, "PeerInfo layout changed: bump kVersion");
-static_assert(sizeof(WawPlayerState) == 36, "WawPlayerState changed: bump kVersion");
+static_assert(sizeof(WawPlayerState) == 44, "WawPlayerState changed: bump kVersion");
 static_assert(sizeof(BfPlayerState) == 32, "BfPlayerState changed: bump kVersion");
 static_assert(offsetof(SharedBlock, waw) == 0x40, "layout changed: bump kVersion");
 static_assert(offsetof(SharedBlock, bf) == 0x80, "layout changed: bump kVersion");

@@ -30,9 +30,10 @@ namespace {
 // Everything this bridge takes from wawbf.ini. Read again whenever the file
 // is saved, so it can be changed while the game runs.
 struct Settings {
-  AddressSpec origin, angles;
+  AddressSpec origin, angles, fov;
   bool haveOrigin = false;
   bool haveAngles = false;
+  bool haveFov = false;
   int tickMs = 16;
 };
 
@@ -40,6 +41,7 @@ Settings LoadSettings(const Config& config) {
   Settings s;
   s.haveOrigin = config.GetAddress("waw", "player_origin", s.origin);
   s.haveAngles = config.GetAddress("waw", "view_angles", s.angles);
+  s.haveFov = config.GetAddress("waw", "view_fov", s.fov);
   if (!s.haveOrigin) {
     log::Info("[waw] player_origin not set: heartbeat only (see docs/PHASE0.md)");
   }
@@ -75,9 +77,18 @@ void Publish() {
   if (s.haveAngles && mem::ReadFloat3(mem::Resolve(s.angles), next.viewAngles)) {
     next.flags |= kWawAnglesValid;
   }
+  // Two tangents; anything outside a sane lens means the address is wrong.
+  float fov[2];
+  if (s.haveFov && mem::Read(mem::Resolve(s.fov), fov, sizeof(fov)) && fov[0] > 0.05f &&
+      fov[0] < 5.0f && fov[1] > 0.05f && fov[1] < 5.0f) {
+    next.tanHalfFov[0] = fov[0];
+    next.tanHalfFov[1] = fov[1];
+    next.flags |= kWawFovValid;
+  }
   const bool same = next.flags == g_state.flags &&
                     std::memcmp(next.origin, g_state.origin, sizeof(next.origin)) == 0 &&
-                    std::memcmp(next.viewAngles, g_state.viewAngles, sizeof(next.viewAngles)) == 0;
+                    std::memcmp(next.viewAngles, g_state.viewAngles, sizeof(next.viewAngles)) == 0 &&
+                    std::memcmp(next.tanHalfFov, g_state.tanHalfFov, sizeof(next.tanHalfFov)) == 0;
   if (same && g_state.frame != 0 && ElapsedUs(g_state.timeUs, next.timeUs) < 50000) return;
   ++next.frame;
   g_state = next;
