@@ -2,6 +2,10 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <cstring>
+#include <vector>
+
 namespace wawbf::mem {
 
 uintptr_t Resolve(const AddressSpec& spec) {
@@ -33,6 +37,30 @@ bool Write(uintptr_t address, const void* data, size_t size) {
          WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<LPVOID>(address), data, size,
                             &done) &&
          done == size;
+}
+
+uintptr_t FindRecordNamed(uintptr_t from, size_t size, const char* name) {
+  const size_t length = std::strlen(name);
+  if (!from || !length || length >= 96) return 0;
+  // A name is text in the program's own image, so only pointers into that
+  // are worth following.
+  auto* base = reinterpret_cast<BYTE*>(GetModuleHandleW(nullptr));
+  auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+  const uintptr_t low = reinterpret_cast<uintptr_t>(base), high = low + nt->OptionalHeader.SizeOfImage;
+  std::vector<uint32_t> block(0x4000);
+  char text[100];
+  for (size_t done = 0; done < size; done += block.size() * sizeof(uint32_t)) {
+    const size_t take = std::min(block.size() * sizeof(uint32_t), size - done);
+    if (!Read(from + done, block.data(), take)) continue;  // not all of the range need be there
+    for (size_t i = 0; i < take / sizeof(uint32_t); ++i) {
+      const uintptr_t pointer = block[i];
+      if (pointer < low || pointer >= high) continue;
+      if (Read(pointer, text, length + 1) && text[length] == 0 && std::memcmp(text, name, length) == 0) {
+        return from + done + i * sizeof(uint32_t);
+      }
+    }
+  }
+  return 0;
 }
 
 namespace {

@@ -23,7 +23,7 @@ namespace wawbf {
 
 constexpr uint32_t kMagic = 0x46425757;  // "WWBF" in memory
 constexpr uint32_t kMagicInitializing = 1;
-constexpr uint32_t kVersion = 11;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons; 5: camera; 6: kit; 7: weapon in hand, abilities; 8: weapon uses; 9: magazine, charge; 10: the thrown grenade; 11: and not
+constexpr uint32_t kVersion = 12;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons; 5: camera; 6: kit; 7: weapon in hand, abilities; 8: weapon uses; 9: magazine, charge; 10: the thrown grenade; 11: and not; 12: who the character is
 constexpr const wchar_t* kMappingName = L"Local\\WaWBF_v1";
 constexpr uint32_t kMappingSize = 0x10000;  // 64 KiB; later phases add rings
 constexpr uint32_t kHeartbeatTimeoutMs = 2000;
@@ -174,7 +174,12 @@ enum BfFlags : uint32_t {
   kBfThirdPerson = 1u << 2,
   kBfAbilityInUse = 1u << 3,  // the selected ability is being used this moment
   kBfWeaponInUse = 1u << 4,   // and so is the weapon in hand: a shot being fired, a lightsaber mid-swing
-
+  // SWBF2's own crosshair is in the picture it sends (a character with
+  // something to aim), so WaW's is not wanted as well.
+  kBfCrosshair = 1u << 5,
+  // The character fights with a lightsaber: WaW's count of the ammunition
+  // for the weapon that stands for it there means nothing, and is not shown.
+  kBfMelee = 1u << 6,
 };
 
 // Game B -> game A. Phase 0 only reports where the BF unit is, so the two
@@ -199,6 +204,10 @@ struct BfPlayerState {
   // How far the weapon had been charged when it was last fired, 0 to 1 (the
   // bowcaster: held, it charges, and fires when let go).
   float weaponCharge;
+  // Who the character is, as a number (swbf2/arena/WAW_arena.lua has the
+  // list), or 0 if it is not known: several characters share a kit. WaW shows
+  // the name that goes with it where it shows the player's own.
+  uint32_t who;
 };
 
 struct SharedBlock {
@@ -210,7 +219,7 @@ struct SharedBlock {
 static_assert(std::is_standard_layout<SharedBlock>::value, "layout must be fixed");
 static_assert(sizeof(PeerInfo) == 12, "PeerInfo layout changed: bump kVersion");
 static_assert(sizeof(WawPlayerState) == 96, "WawPlayerState changed: bump kVersion");
-static_assert(sizeof(BfPlayerState) == 52, "BfPlayerState changed: bump kVersion");
+static_assert(sizeof(BfPlayerState) == 56, "BfPlayerState changed: bump kVersion");
 static_assert(offsetof(SharedBlock, waw) == 0x40, "layout changed: bump kVersion");
 static_assert(offsetof(SharedBlock, bf) == 0xC0, "layout changed: bump kVersion");
 static_assert(sizeof(SharedBlock) <= kMappingSize, "mapping too small");

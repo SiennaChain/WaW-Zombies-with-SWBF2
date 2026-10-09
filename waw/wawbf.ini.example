@@ -42,10 +42,21 @@ held_jump = CoDWaW.exe+0x2C0FDF8
 ; "The next ability" is nothing this game has an action for, so the bridge
 ; looks at a key and a controller button itself, while this game's window is
 ; the one in front. The key is a Windows virtual-key code (0x58 = X); the
-; button is XInput's number for it (0x0004 = left on the d-pad, 0x0001 up,
-; 0x0002 down, 0x0008 right). 0 = none.
+; button is XInput's number for it (0x0100 = the left shoulder button, which
+; is this game's own for a special grenade, of which this map has none;
+; 0x0001, 0x0002, 0x0004, 0x0008 = up, down, left, right on the d-pad).
+; 0 = none. Not left on the d-pad, though it was at first: that changes to
+; what is fitted to the weapon in hand.
 next_ability_key = 0x58
-next_ability_pad = 0x0004
+next_ability_pad = 0x0100
+; And the same for that: "what is fitted to the weapon in hand", which is
+; Boba Fett's flamethrower, part of his rifle. Pressed, it changes between
+; the two. Left on the d-pad and the 5 key are this game's own for it; the
+; game's own action is left with nothing to do, because while it has that to
+; do the game shows the fitted weapon at the bottom of the screen, and the
+; mod's scripts make the change when the bridge says the button is pressed.
+fitted_key = 0x35
+fitted_pad = 0x0004
 ; The byte behind this game's cg_drawGun setting (1 = draw the player's gun).
 ; While SWBF2's weapon is being drawn over the picture the bridge keeps it 0,
 ; so there is one gun on screen, and puts it back to 1 when SWBF2's picture
@@ -100,8 +111,12 @@ head_entity_origin = 0x24
 ; runs, in aim_field (the player entity's "spawnflags", which the scripts read
 ; and which means nothing on a player), and they answer in scripts_say with
 ; how far along it the first thing is. docs/PHASE3.md has how this was found.
+; The crosshair seen from behind is SWBF2's, in the middle of its picture.
+; aim_mark = 1 also draws a small cross of the bridge's own on the spot the
+; shot is pointed at, for checking that the two agree.
 gun_angles = CoDWaW.exe+0x312B65C
 aim_field = CoDWaW.exe+0x136C8A0
+aim_mark = 0
 ; Being hit does not throw the view about from behind the character: the
 ; number behind bg_viewKickScale (how far the view is thrown for each point of
 ; damage) is kept at 0 while the view is third person, and put back afterwards.
@@ -144,7 +159,70 @@ ground_none = 1023
 ; troopers 75, heroes with guns 107, anyone with a lightsaber 150. The game's
 ; own 39 comes back when SWBF2 goes away.
 jump_height = CoDWaW.exe+0x4F0BD8 > 0x10
-jump_heights = 1 = 107, 2 = 75, 3 = 75, 4 = 107, 5 = 107, 6 = 107, 7 = 150, 8 = 150, 9 = 150, 10 = 150, 11 = 150, 12 = 150
+jump_heights = 1 = 107, 2 = 75, 3 = 75, 4 = 107, 5 = 107, 6 = 107, 7 = 150, 8 = 150, 9 = 150, 10 = 150, 11 = 150, 12 = 150, 13 = 150
+; More for the player to take: 200, so that a zombie's fourth blow is the one
+; that puts them down (the game's own 100 makes it the second). max_health is
+; the number behind the game's setting g_player_maxhealth, which it gives a
+; player when it puts them into a map; the bridge keeps it at player_health.
+; It has to be this setting and not the scripts' "maxhealth": that is another
+; number, and the game gets a player back to this one after a blow. Leave
+; either out for the game's own.
+max_health = CoDWaW.exe+0x145581C > 0x10
+player_health = 200
+; The switches the game keeps on the player's entity, the lowest of which is
+; what "god" typed into the console turns on and off. Only [debug]
+; god_at_start uses it.
+player_flags = CoDWaW.exe+0x136C8A4
+; "Press F to ..." from behind the character. The game's routine that puts
+; what the player can use on the screen gives up at once in third person
+; (CoDWaW.exe+0x51130: "is the view from behind? then go to the end").
+; hint_jump is that jump, two bytes (75 40), which the bridge takes out. Leave
+; it out for the game's own behaviour: no hints from behind.
+hint_jump = CoDWaW.exe+0x51137
+; The scoreboard, played alone. The scores button (Tab, or Back on a
+; controller) brings up "Mission Objectives" in a game played alone, of which
+; zombies has none, and the co-op scoreboard only in an online game: two short
+; jumps in the game's code on its "onlinegame" setting. Each entry here is one
+; of them: where it is, the bytes that are there, and the bytes put in their
+; place (the first never brings the objectives up; the second lets the
+; scoreboard be drawn). Nothing is changed unless both are as expected. Leave
+; it out for the game's own.
+scoreboard_alone = CoDWaW.exe+0x379DA: 75 73 = EB 73, CoDWaW.exe+0x2680D2: 74 24 = 90 90
+; The player's name on that scoreboard is the character's. SWBF2's side says
+; who is being played, as a number (swbf2/arena/WAW_arena.lua, WHO: several
+; characters share a kit); character_names has the name for each; and the
+; bridge changes the player's name the way the player could, with "name ..."
+; in the console, through console: the game's own routine for a line typed
+; there. player_name is where the game has the name now (through the player's
+; client record), read first so that it can be put back when SWBF2's picture
+; stops. Leave console or character_names out and the player keeps their own.
+console = CoDWaW.exe+0x194200
+player_name = CoDWaW.exe+0x136C870 > 0x215C
+character_names = 1 = Han Solo, 2 = Clone Trooper, 3 = Stormtrooper, 4 = Battle Droid, 5 = Boba Fett, 6 = Chewbacca, 7 = Princess Leia, 8 = Luke Skywalker, 9 = Obi-Wan Kenobi, 10 = Mace Windu, 11 = Darth Maul, 12 = Aayla Secura, 13 = Anakin Skywalker, 14 = Darth Vader, 15 = Yoda, 16 = Count Dooku, 17 = General Grievous, 18 = The Emperor
+; Three of this game's own settings that the bridge switches, found by name.
+; (Others above are reached through a pointer the game keeps to the setting,
+; which never moves. None is known for these, and a plain address will not
+; do: the game keeps its settings in one table, each where the last one left
+; off, so one more "+set" when it is started moves every later setting along
+; by one.) settings_table is roughly where that table is and
+; settings_table_size how much of memory from there is looked through for a
+; setting's name; the place found is in the log.
+settings_table = CoDWaW.exe+0x1D80000
+settings_table_size = 0x100000
+; The crosshair. SWBF2's picture has that game's own in it for a character
+; with something to aim, and this game's is switched off while it does. Leave
+; crosshair_setting out to keep this game's on (there will then be two).
+crosshair_setting = cg_drawCrosshair
+; A lightsaber's ammunition. The weapon that stands for a lightsaber here has
+; some, and this game shows it; for a character with a lightsaber that part
+; of the HUD (the weapon's name and ammunition) is switched off.
+ammo_setting = ammoCounterHide
+; Footsteps. This game's player is heard walking and running whoever SWBF2's
+; character is, and the Emperor (kit 13) glides. For the kits in quiet_kits
+; this game's footsteps are switched off while the player is on their feet,
+; and back on when they crouch (he creeps like anyone) and for anyone else.
+footsteps_setting = cg_footsteps
+quiet_kits = 13
 ; The byte behind this game's cl_paused: not zero while the pause menu is up.
 ; SWBF2's picture is drawn over everything, so while the game is paused it
 ; stands aside for the menu.
@@ -162,3 +240,7 @@ chain =
 [debug]
 ; 1 = log every change of the number at [waw] weapon_state.
 log_weapon_state = 0
+; 1 = the player begins each map unable to be hurt, exactly as if "god" had
+; been typed into the console: it is the same switch ([waw] player_flags), so
+; typing god there turns it off, and on again. For testing.
+god_at_start = 0

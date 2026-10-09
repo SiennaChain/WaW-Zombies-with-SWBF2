@@ -34,6 +34,12 @@
 namespace wawbf {
 namespace {
 
+// A change to the game's code: at a place, these bytes for those.
+struct CodeChange {
+  AddressSpec at;
+  std::vector<unsigned char> before, after;
+};
+
 // Everything this bridge takes from wawbf.ini. Read again whenever the file
 // is saved, so it can be changed while the game runs.
 struct Settings {
@@ -46,6 +52,20 @@ struct Settings {
   std::vector<AddressSpec> heldFire, heldAim, heldReload, heldAbility, heldJump;
   int nextAbilityKey = 0;       // a Windows virtual-key code; 0 = none
   uint32_t nextAbilityPad = 0;  // a controller's buttons, as XInput numbers them; 0 = none
+  int fittedKey = 0;            // the same for "what is fitted to the weapon": Boba Fett's flamethrower
+  uint32_t fittedPad = 0;
+  std::vector<CodeChange> scoreboardAlone;  // what makes the scores button bring up the scoreboard in a game played alone
+  AddressSpec console;          // the game's routine that takes a line for its console
+  bool haveConsole = false;
+  AddressSpec playerName;       // the player's name as the game has it (text), for putting back
+  bool havePlayerName = false;
+  std::vector<std::pair<int, std::string>> characterNames;  // SWBF2's number for a character, and the name the player goes by as them
+  AddressSpec maxHealth;        // the number behind g_player_maxhealth: what a player is given when put into a map
+  bool haveMaxHealth = false;
+  int playerHealth = 0;         // and what it is to be; 0 = the game's own
+  AddressSpec playerFlags;      // the player entity's switches, one of which is what "god" in the console turns on and off
+  bool havePlayerFlags = false;
+  bool godAtStart = false;      // [debug] god_at_start: the player begins each map with that one on
   AddressSpec drawGun;  // the byte behind cg_drawGun
   bool haveDrawGun = false;
   AddressSpec viewOrigin, viewAxis;  // where the game is drawing from: 3 floats, and 9 (forward, left, up)
@@ -68,12 +88,24 @@ struct Settings {
   bool haveGunAngles = false;
   AddressSpec aimField;              // a number on the player's entity the scripts read: the line through the middle of the screen
   bool haveAimField = false;
+  bool aimMark = false;              // draw a crosshair of the bridge's own on the spot a shot from behind is pointed at
   AddressSpec viewAngle;             // the number behind cg_thirdPersonAngle: how far round the player the camera sits
   bool haveViewAngle = false;
   float gunViewAngle = 0;            // and what it is to be, in degrees, for a character with something to aim
   AddressSpec jumpHeight;            // the number behind jump_height: how high the player jumps, in units
   bool haveJumpHeight = false;
   std::vector<std::pair<int, float>> jumpHeights;  // and what it is to be for each kit
+  AddressSpec hintJump;              // the jump that keeps "Press F to ..." off the screen in third person
+  bool haveHintJump = false;
+  // Three of the game's own settings that are found by name each time the
+  // game runs (NamedSetting, below): no pointer to them is known, and where
+  // a setting is kept moves with what the game was started with.
+  AddressSpec settingsTable;         // where the game keeps its settings, roughly
+  uint32_t settingsTableSize = 0;    // and how much of memory from there to look through
+  std::string crosshairSetting;      // "cg_drawCrosshair"
+  std::string ammoSetting;           // "ammoCounterHide": the weapon's name and ammunition are not shown
+  std::string footstepsSetting;      // "cg_footsteps": whether the player's own footsteps are heard
+  std::vector<int> quietKits;        // the kits that are not heard walking
   AddressSpec stance;                // the player's flags, in which one bit is "crouched"
   bool haveStance = false;
   uint32_t crouchBit = 0x4;
@@ -123,6 +155,61 @@ Settings LoadSettings(const Config& config) {
   s.heldJump = LoadPlaces(config, "held_jump");
   s.nextAbilityKey = config.GetInt("waw", "next_ability_key", 0);
   s.nextAbilityPad = static_cast<uint32_t>(config.GetInt("waw", "next_ability_pad", 0));
+  s.fittedKey = config.GetInt("waw", "fitted_key", 0);
+  s.fittedPad = static_cast<uint32_t>(config.GetInt("waw", "fitted_pad", 0));
+  // "place: bytes there = bytes to put, place: ..."
+  const std::string changes = config.GetString("waw", "scoreboard_alone");
+  for (size_t start = 0; start < changes.size();) {
+    size_t end = changes.find(',', start);
+    if (end == std::string::npos) end = changes.size();
+    const std::string one = changes.substr(start, end - start);
+    start = end + 1;
+    if (one.find_first_not_of(" \t") == std::string::npos) continue;
+    const size_t colon = one.find(':'), equals = one.find('=');
+    CodeChange change;
+    const auto bytes = [](const std::string& text, std::vector<unsigned char>& out) {
+      for (const char* p = text.c_str(); *p;) {
+        char* stop = nullptr;
+        const unsigned long byte = std::strtoul(p, &stop, 16);
+        if (stop == p) {
+          ++p;
+        } else {
+          out.push_back(static_cast<unsigned char>(byte));
+          p = stop;
+        }
+      }
+    };
+    if (colon != std::string::npos && equals != std::string::npos && equals > colon && ParseAddressSpec(one.substr(0, colon), change.at)) {
+      bytes(one.substr(colon + 1, equals - colon - 1), change.before);
+      bytes(one.substr(equals + 1), change.after);
+    }
+    if (!change.before.empty() && change.before.size() == change.after.size()) {
+      s.scoreboardAlone.push_back(change);
+    } else {
+      log::Error("[waw] scoreboard_alone: can't parse \"%s\"", one.c_str());
+      s.scoreboardAlone.clear();
+      break;
+    }
+  }
+  s.haveConsole = config.GetAddress("waw", "console", s.console);
+  s.havePlayerName = config.GetAddress("waw", "player_name", s.playerName);
+  // "1 = Han Solo, 2 = Clone Trooper": a character's number, and their name
+  const std::string names = config.GetString("waw", "character_names");
+  for (size_t start = 0; start < names.size();) {
+    size_t end = names.find(',', start);
+    if (end == std::string::npos) end = names.size();
+    const std::string one = names.substr(start, end - start);
+    start = end + 1;
+    const size_t equals = one.find('=');
+    if (equals == std::string::npos) continue;
+    const int who = std::atoi(one.substr(0, equals).c_str());
+    const size_t from = one.find_first_not_of(" \t", equals + 1), to = one.find_last_not_of(" \t");
+    if (who > 0 && from != std::string::npos && to >= from) s.characterNames.emplace_back(who, one.substr(from, to - from + 1));
+  }
+  s.haveMaxHealth = config.GetAddress("waw", "max_health", s.maxHealth);
+  s.playerHealth = config.GetInt("waw", "player_health", 0);
+  s.havePlayerFlags = config.GetAddress("waw", "player_flags", s.playerFlags);
+  s.godAtStart = config.GetInt("debug", "god_at_start", 0) != 0;
   s.haveDrawGun = config.GetAddress("waw", "draw_gun", s.drawGun);
   s.haveView = config.GetAddress("waw", "view_origin", s.viewOrigin) &&
                config.GetAddress("waw", "view_axis", s.viewAxis);
@@ -155,6 +242,7 @@ Settings LoadSettings(const Config& config) {
   s.haveViewKick = config.GetAddress("waw", "view_kick", s.viewKick);
   s.haveGunAngles = config.GetAddress("waw", "gun_angles", s.gunAngles);
   s.haveAimField = config.GetAddress("waw", "aim_field", s.aimField);
+  s.aimMark = config.GetInt("waw", "aim_mark", 0) != 0;
   s.haveViewAngle = config.GetAddress("waw", "third_person_angle", s.viewAngle);
   s.gunViewAngle = config.GetFloat("waw", "gun_view_angle", 0.0f);
   s.haveJumpHeight = config.GetAddress("waw", "jump_height", s.jumpHeight);
@@ -170,6 +258,14 @@ Settings LoadSettings(const Config& config) {
     while (*p && *p != ',') ++p;
     if (*p == ',') ++p;
   }
+  s.haveHintJump = config.GetAddress("waw", "hint_jump", s.hintJump);
+  if (config.GetAddress("waw", "settings_table", s.settingsTable)) {
+    s.settingsTableSize = static_cast<uint32_t>(std::strtoul(config.GetString("waw", "settings_table_size", "0x180000").c_str(), nullptr, 0));
+  }
+  s.crosshairSetting = config.GetString("waw", "crosshair_setting");
+  s.ammoSetting = config.GetString("waw", "ammo_setting");
+  s.footstepsSetting = config.GetString("waw", "footsteps_setting");
+  s.quietKits = states("quiet_kits", "");
   s.crouchBit = static_cast<uint32_t>(config.GetInt("waw", "crouch_bit", 0x4));
   s.haveHeadCall = config.GetAddress("waw", "head_call", s.headCall) && config.GetAddress("waw", "head_routine", s.headRoutine);
   s.headEntityOrigin = config.GetInt("waw", "head_entity_origin", s.headEntityOrigin);
@@ -200,6 +296,7 @@ Settings g_settings;             // guarded by g_mutex
 SharedBlock* g_block = nullptr;  // guarded by g_mutex; set once the mapping is open
 WawPlayerState g_state{};        // guarded by g_mutex; the last state published
 bool g_fromBehind = false;       // guarded by g_mutex; this game is being drawn from behind the player
+bool g_handsBusy = false;        // guarded by g_mutex; the scripts say the player's hands are doing something of WaW's own
 float g_aimFar = 0;              // guarded by g_mutex; how far along the line through the middle of the screen the first thing is, in units (from the scripts); 0 = nothing to aim
 std::atomic<uint32_t> g_frames{0};
 std::atomic<bool> g_crouched{false};       // the player is crouched (for SteadyHead, which runs on the game's own thread)
@@ -307,8 +404,10 @@ bool Knifing() {
   last = state;
   BfPlayerState bf{};
   const bool behind = g_block && g_block->bf.read(bf) && (bf.flags & kBfThirdPerson) != 0;
-  const bool knifing = !behind && std::find(s.knifeStates.begin(), s.knifeStates.end(), static_cast<int>(state)) != s.knifeStates.end();
-  if (knifing != was && overlay::Drawing()) log::Info(knifing ? "knife: showing WaW's own while it is used" : "knife: done");
+  // The same for anything else WaW's own hands do, which the scripts say:
+  // the bottle a perk is drunk from, the knuckles cracked at Pack-a-Punch.
+  const bool knifing = !behind && (g_handsBusy || std::find(s.knifeStates.begin(), s.knifeStates.end(), static_cast<int>(state)) != s.knifeStates.end());
+  if (knifing != was && overlay::Drawing()) log::Info(knifing ? "knife: showing WaW's own hands while they are used" : "knife: done");
   was = knifing;
   return knifing;
 }
@@ -413,12 +512,25 @@ void TellKit() {
   const bool have = overlay::Drawing() && g_block->bf.read(bf);
   const int32_t kit = have ? static_cast<int32_t>(bf.kit & 31) : 0;
   const int32_t ability = have ? static_cast<int32_t>(bf.ability & 7) : 0;
+  // And one bit of the player's own: the button that changes between a
+  // weapon and what is fitted to it (Boba Fett's rifle and its flamethrower)
+  // is held. The game has an action of its own for this, but with that
+  // action in use it shows the fitted weapon at the bottom of the screen, and
+  // nothing the bridge can reach hides that on a PC; so the action is left
+  // idle, and the key and the controller button are looked at directly, as
+  // for "the next ability", while WaW is the window in front.
+  DWORD foreground = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &foreground);
+  const bool fitted = have && foreground == GetCurrentProcessId() &&
+                      ((g_settings.fittedKey && (GetAsyncKeyState(g_settings.fittedKey) & 0x8000) != 0) ||
+                       (g_settings.fittedPad && (pad::Buttons() & g_settings.fittedPad) != 0));
   const int32_t says = !have ? 0
                              : kit | (ability << 5) | ((bf.flags & kBfAbilityInUse) ? 1 << 8 : 0) |
                                    ((bf.flags & kBfWeaponInUse) ? 1 << 9 : 0) |
                                    static_cast<int32_t>((bf.abilityUses & 0x7F) << 10) |
                                    static_cast<int32_t>((bf.weaponUses & 0x7F) << 17) |
-                                   (static_cast<int32_t>(std::min(1.0f, std::max(0.0f, bf.weaponCharge)) * 15.0f + 0.5f) << 24);
+                                   (static_cast<int32_t>(std::min(1.0f, std::max(0.0f, bf.weaponCharge)) * 15.0f + 0.5f) << 24) |
+                                   (fitted ? 1 << 28 : 0);
   const uintptr_t address = mem::Resolve(g_settings.kitField);
   int32_t now = says;
   if (!address || !mem::Read(address, &now, sizeof(now))) return;
@@ -442,11 +554,21 @@ void TellKit() {
 void HearScripts(const Settings& s, WawPlayerState& next) {
   next.weapon = next.clip = next.clipSize = 0;
   g_aimFar = 0;
+  g_handsBusy = false;
   int32_t says = 0;
   const uintptr_t address = s.haveScriptsSay ? mem::Resolve(s.scriptsSay) : 0;
   if (!address || !mem::Read(address, &says, sizeof(says)) || says < 0) return;
   g_aimFar = static_cast<float>((says >> 20) & 0x7FF) * 2.0f;
   next.weapon = static_cast<uint32_t>(says & 3);
+  // 3 is neither weapon: the player's own hands are busy with something of
+  // WaW's (drinking a perk, cracking their knuckles at the Pack-a-Punch).
+  // SWBF2 is told "not known", is not to fire meanwhile, and its picture
+  // stands aside for WaW's hands as it does for the knife (Knifing).
+  g_handsBusy = next.weapon == 3;
+  if (g_handsBusy) {
+    next.weapon = 0;
+    next.buttons &= ~static_cast<uint32_t>(kWawButtonFire | kWawButtonAim | kWawButtonAbility | kWawButtonReload | kWawButtonNextAbility);
+  }
   if (says & 4) next.flags |= kWawAbilityReady;
   if (says & 8) next.flags |= kWawDry;
   next.clip = static_cast<uint32_t>((says >> 4) & 0xFF);
@@ -536,6 +658,187 @@ void SteadyCamera(const Settings& s) {
     log::Info("camera: in third person it no longer rides on the hidden soldier's head");
   } else if (tries == 20) {
     log::Error("[waw] head_call: the call there is not the one to head_routine; the camera is left on the soldier's head");
+  }
+}
+
+// "Press F to ..." from behind the character. The game works out what the
+// player could use (a door, a wall that sells something) wherever its camera
+// is, but the routine that passes that on to the screen gives up at once
+// when the view is third person: two instructions, "is the view from behind?
+// then go to the end" (CoDWaW.exe+0x51130; the hint is not shown and nothing
+// says why). The second of them, a two-byte jump, is taken out, once, if the
+// settings say where it is and it is the jump expected.
+void ShowHints(const Settings& s) {
+  static int tries = 0;
+  static bool done = false;
+  if (done || tries >= 20 || !s.haveHintJump) return;
+  ++tries;
+  const uintptr_t at = mem::Resolve(s.hintJump);
+  unsigned char now[2] = {};
+  if (at && mem::Read(at, now, sizeof(now)) && now[0] == 0x75 && now[1] == 0x40) {
+    DWORD old = 0;
+    if (VirtualProtect(reinterpret_cast<void*>(at), 2, PAGE_EXECUTE_READWRITE, &old)) {
+      const unsigned char nothing[2] = {0x90, 0x90};
+      std::memcpy(reinterpret_cast<void*>(at), nothing, sizeof(nothing));
+      VirtualProtect(reinterpret_cast<void*>(at), 2, old, &old);
+      FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(at), 2);
+      done = true;
+      log::Info("hints: what the player can use is said on the screen from behind the character as well");
+    }
+  } else if (at && now[0] == 0x90 && now[1] == 0x90) {
+    done = true;  // already out
+  } else if (tries == 20) {
+    log::Error("[waw] hint_jump: what is there is not the jump expected; no hints from behind the character");
+  }
+}
+
+// The scoreboard, played alone. What the "scores" button brings up is decided
+// in the game's code by whether the game is an online one: if it is, the
+// scoreboard the players of a co-op game see (names, points, kills, downs,
+// revives, headshots); if not, "Mission Objectives", which zombies has none
+// of. Two places decide it, each a short jump on the game's "onlinegame"
+// setting: the routine that brings the objectives up while the button is held
+// (CoDWaW.exe+0x379D0) and the one that draws the scoreboard
+// (CoDWaW.exe+0x2680B0). Both jumps are changed, so that alone, too, the
+// button brings up the scoreboard and not the objectives. The setting itself
+// is left alone: far more than this hangs on it.
+//
+// The settings give each change as a place, the bytes expected there and the
+// bytes to put ([waw] scoreboard_alone); nothing is changed unless every
+// place holds what is expected (or has been changed already).
+void ScoreboardAlone(const Settings& s) {
+  static int tries = 0;
+  static bool done = false;
+  if (done || tries >= 20 || s.scoreboardAlone.empty()) return;
+  ++tries;
+  std::vector<uintptr_t> places;
+  for (const CodeChange& change : s.scoreboardAlone) {
+    const uintptr_t at = mem::Resolve(change.at);
+    std::vector<unsigned char> now(change.before.size());
+    if (!at || !mem::Read(at, now.data(), now.size()) || (now != change.before && now != change.after)) {
+      if (tries == 20) log::Error("[waw] scoreboard_alone: what is at one of the places is not what was expected; the scores button is left as the game has it");
+      return;
+    }
+    places.push_back(now == change.after ? 0 : at);
+  }
+  for (size_t i = 0; i < places.size(); ++i) {
+    const std::vector<unsigned char>& bytes = s.scoreboardAlone[i].after;
+    DWORD old = 0;
+    if (!places[i] || !VirtualProtect(reinterpret_cast<void*>(places[i]), bytes.size(), PAGE_EXECUTE_READWRITE, &old)) continue;
+    std::memcpy(reinterpret_cast<void*>(places[i]), bytes.data(), bytes.size());
+    VirtualProtect(reinterpret_cast<void*>(places[i]), bytes.size(), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(places[i]), bytes.size());
+  }
+  done = true;
+  log::Info("scores: played alone, the scores button brings up the scoreboard a co-op game has (%zu changes to the game's code)", places.size());
+}
+
+// A line for the game's console, as if it had been typed there: the game's
+// own routine for adding one (CoDWaW.exe+0x194200). It takes the text in one
+// register and which player's console in another, not in the usual way, so
+// it is called by hand. It keeps to itself behind a lock of the game's, and
+// can be called from any thread.
+void Console(uintptr_t routine, const char* text) {
+  __asm {
+    mov eax, text
+    xor ecx, ecx
+    call routine
+  }
+}
+
+// The player's name is the character's. The game shows the player's name on
+// its scoreboard, and played alone that is "Unknown Soldier" or whatever the
+// player goes by; the user wanted whoever they are playing at the moment.
+// SWBF2's side says who that is, as a number (several characters share a
+// kit), the settings have the name that goes with each number, and the name
+// is changed the way the player could change it: "name ..." in the console.
+// The game does the rest (it tells its own server half, which tells
+// everything that shows names). What the player was called before is read
+// from the game first and put back when SWBF2 goes away.
+void NameCharacter(const Settings& s, const SharedBlock* block, bool swbf2Alive) {
+  static uint32_t named = 0;
+  static std::string before;
+  const uintptr_t console = s.haveConsole ? mem::Resolve(s.console) : 0;
+  if (!console || s.characterNames.empty() || !block) return;
+  BfPlayerState bf{};
+  const uint32_t who = swbf2Alive && block->bf.read(bf) ? bf.who : 0;
+  if (who == named) return;
+  std::string name;
+  if (who) {
+    for (const auto& one : s.characterNames) {
+      if (one.first == static_cast<int>(who)) name = one.second;
+    }
+    if (name.empty()) return;  // nobody the settings have a name for: the player keeps the one they have
+    char was[33] = {};
+    const uintptr_t at = s.havePlayerName ? mem::Resolve(s.playerName) : 0;
+    if (!named && at && mem::Read(at, was, sizeof(was) - 1)) before = was;
+  } else {
+    name = before;
+  }
+  // Nothing that would end the name early or begin another command.
+  name.erase(std::remove_if(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == '"' || c == ';' || c == '\\'; }), name.end());
+  if (!name.empty()) {
+    const std::string line = "name \"" + name + "\"\n";
+    Console(console, line.c_str());
+    log::Info("name: the player is called %s%s", name.c_str(), who ? "" : " again");
+  }
+  named = who;
+}
+
+// More for the player to take: 200 where the game gives 100, so that a
+// zombie's fourth blow is the one that puts them down, not its second.
+//
+// The game takes the figure from its setting g_player_maxhealth each time it
+// puts a player into a map, and writes it in three places: the player's
+// health, the most their entity can have, and the most their client record
+// says they can have. The last is the one it gets a player back to after a
+// blow (CoDWaW.exe+0x11C778, behind the scripts' SetNormalHealth), and no
+// script can change it: the scripts' own "maxhealth" is the second. With only
+// that one raised, as it first was, the game "healed" a player on 150 of 200
+// down to 100, and one on 50 down to 25 and on down, and left them there.
+//
+// So the setting itself is kept at the figure wanted, from before the map is
+// loaded: looked at every time round, since the game makes the setting when
+// it starts loading a map and puts the player in some seconds later. It is
+// reached through the game's own pointer to it, which does not move.
+void MoreHealth(const Settings& s) {
+  static int told = 0;
+  if (!s.haveMaxHealth || s.playerHealth <= 0) return;
+  const uintptr_t at = mem::Resolve(s.maxHealth);
+  int32_t now = 0;
+  if (!at || !mem::Read(at, &now, sizeof(now)) || now == s.playerHealth || now <= 0) return;
+  const int32_t want = s.playerHealth;
+  if (mem::Write(at, &want, sizeof(want)) && told != want) {
+    told = want;
+    log::Info("health: a player put into a map from now on has %ld (the game's own: %ld)", static_cast<long>(want), static_cast<long>(now));
+  }
+}
+
+// For testing: the player begins each map unable to be hurt, exactly as if
+// "god" had been typed into the console, so that typing it there turns it off,
+// and on again. The console's "god" flips the lowest of the switches the game
+// keeps on the player's entity (CoDWaW.exe+0xF4420: "xor [entity+0x1B4], 1"),
+// and so does this, once for each time the player is put into a map.
+//
+// The game sets those switches afresh whenever it puts a player into a map
+// (to 0x800), so a switch of this bridge's own among them, one the game's code
+// never looks at, says "seen to already": it is gone again after the next
+// map, or the same map started over, and at no other time. Nothing is done
+// while the switches read 0: no player is there yet.
+//
+// (This was first the scripts' doing, with what they have for it,
+// EnableInvulnerability. That is another switch, kept somewhere else, and
+// nothing typed into the console could turn it off.)
+const uint32_t kGodSwitch = 0x1, kSeenSwitch = 0x40000000;
+
+void GodAtStart(const Settings& s) {
+  if (!s.godAtStart || !s.havePlayerFlags) return;
+  const uintptr_t at = mem::Resolve(s.playerFlags);
+  uint32_t switches = 0;
+  if (!at || !mem::Read(at, &switches, sizeof(switches)) || switches == 0 || (switches & kSeenSwitch)) return;
+  switches |= kGodSwitch | kSeenSwitch;
+  if (mem::Write(at, &switches, sizeof(switches))) {
+    log::Info("[debug] god_at_start: the player begins unable to be hurt (\"god\" in the console turns it off)");
   }
 }
 
@@ -634,6 +937,112 @@ void MatchJump() {
   }
 }
 
+// Where one of the game's own settings keeps its value, found by the
+// setting's name. The game keeps them all in one table, a record each, the
+// record beginning with a pointer to the name and holding the value sixteen
+// bytes in. Most of the settings this bridge touches are reached through a
+// pointer the game itself keeps to the record, which never moves. For these
+// no such pointer is known, and a record's place in the table depends on how
+// many settings were made before it: start the game with one more "+set" and
+// every later one is a record further on (found the hard way: the three were
+// first written as plain addresses, and a new option for testing moved them
+// all onto their neighbours). So the table is looked through for the name,
+// once, and the answer checked each time it is used. 0 until it is found;
+// looked for again every couple of seconds at most.
+struct NamedSetting {
+  std::string name;
+  uintptr_t record = 0;
+  uint32_t namePointer = 0;
+  DWORD lookedAt = 0;
+};
+
+uintptr_t ValueOf(NamedSetting& setting, const std::string& name) {
+  if (name.empty() || !g_settings.settingsTableSize) return 0;
+  if (setting.name != name) setting = NamedSetting{name};
+  uint32_t pointer = 0;
+  if (setting.record && mem::Read(setting.record, &pointer, sizeof(pointer)) && pointer == setting.namePointer) {
+    return setting.record + 0x10;
+  }
+  const DWORD now = GetTickCount();
+  if (setting.lookedAt && now - setting.lookedAt < 2000) return 0;
+  setting.lookedAt = now | 1;
+  setting.record = mem::FindRecordNamed(mem::Resolve(g_settings.settingsTable), g_settings.settingsTableSize, name.c_str());
+  if (!setting.record || !mem::Read(setting.record, &setting.namePointer, sizeof(setting.namePointer))) {
+    setting.record = 0;
+    return 0;
+  }
+  log::Info("settings: the game keeps %s at 0x%08lX", name.c_str(), static_cast<unsigned long>(setting.record));
+  return setting.record + 0x10;
+}
+
+// One crosshair on screen, not two. SWBF2's picture has its own in it for a
+// character with something to aim (with the ring round it that shows the
+// weapon's magazine, or its heat), and says so; WaW's is switched off for as
+// long as it does (cg_drawCrosshair) and comes back when it stops. Call with
+// g_mutex held.
+void HideCrosshair() {
+  static bool hiding = false;
+  static NamedSetting setting;
+  if (g_settings.crosshairSetting.empty() || !g_block) return;
+  BfPlayerState bf{};
+  const bool hide = overlay::Drawing() && g_block->bf.read(bf) && (bf.flags & kBfCrosshair) != 0;
+  if (!hide && !hiding) return;
+  const uintptr_t at = ValueOf(setting, g_settings.crosshairSetting);
+  if (!at) return;  // the game has not made the setting yet
+  const uint8_t wanted = hide ? 0 : 1;
+  uint8_t now = wanted;
+  if (mem::Read(at, &now, sizeof(now)) && now != wanted) mem::Write(at, &wanted, sizeof(wanted));
+  if (hide != hiding) log::Info(hide ? "crosshair: SWBF2's is in its picture; WaW's own is off" : "crosshair: WaW's own is back");
+  hiding = hide;
+}
+
+// A lightsaber has no ammunition. The weapon that stands for one in WaW has
+// (it has to fire to be a weapon at all), and WaW counts it down on the
+// screen; so for a character with a lightsaber the game's own switch for
+// that part of its HUD (ammoCounterHide: the weapon's name and its
+// ammunition) is turned on, and off again for anyone else. Call with g_mutex
+// held.
+void HideAmmo() {
+  static bool hiding = false;
+  static NamedSetting setting;
+  if (g_settings.ammoSetting.empty() || !g_block) return;
+  BfPlayerState bf{};
+  const bool hide = overlay::Drawing() && g_block->bf.read(bf) && (bf.flags & kBfMelee) != 0;
+  if (!hide && !hiding) return;
+  const uintptr_t at = ValueOf(setting, g_settings.ammoSetting);
+  if (!at) return;  // the game has not made the setting yet
+  const uint8_t wanted = hide ? 1 : 0;
+  uint8_t now = wanted;
+  if (mem::Read(at, &now, sizeof(now)) && now != wanted) mem::Write(at, &wanted, sizeof(wanted));
+  if (hide != hiding) log::Info(hide ? "ammunition: a lightsaber has none; WaW's count of it is not shown" : "ammunition: WaW's count is shown again");
+  hiding = hide;
+}
+
+// Footsteps. WaW's player is heard walking and running whoever the character
+// is, and one of SWBF2's does neither: the Emperor glides. For the kits named
+// in [waw] quiet_kits the game's own switch for the player's footstep sounds
+// (cg_footsteps) is turned off, and turned back on for anybody else. Only
+// while the player is on their feet: crouched, the Emperor creeps along like
+// anyone, and is heard doing it. Call with g_mutex held.
+void QuietSteps() {
+  static bool quiet = false;
+  static NamedSetting setting;
+  if (g_settings.footstepsSetting.empty() || !g_block) return;
+  BfPlayerState bf{};
+  bool want = false;
+  if (overlay::Drawing() && g_block->bf.read(bf) && !(g_state.flags & kWawCrouching)) {
+    for (const int kit : g_settings.quietKits) want = want || kit == static_cast<int>(bf.kit & 31);
+  }
+  if (!want && !quiet) return;
+  const uintptr_t at = ValueOf(setting, g_settings.footstepsSetting);
+  if (!at) return;  // the game has not made the setting yet
+  const uint8_t wanted = want ? 0 : 1;
+  uint8_t now = wanted;
+  if (mem::Read(at, &now, sizeof(now)) && now != wanted) mem::Write(at, &wanted, sizeof(wanted));
+  if (want != quiet) log::Info(want ? "footsteps: this character is not heard walking; WaW's are off" : "footsteps: WaW's are back on");
+  quiet = want;
+}
+
 // Aiming from behind the character.
 //
 // This game does not fire a player's shot the way they are looking. It fires
@@ -666,7 +1075,9 @@ void MatchJump() {
 // both ends mean the same one. From the low end: 8 bits right, 8 up, 7 and 7
 // of direction, and a bit that says the number is there. 0: not from behind.
 //
-// The bridge's own crosshair is drawn on the spot the shot is pointed at.
+// The crosshair seen from behind is SWBF2's own, in the middle of its picture.
+// With [waw] aim_mark the bridge also draws one of its own on the spot the
+// shot is pointed at, which shows how well the two agree.
 // Call with g_mutex held.
 void Aim() {
   static bool told = false;
@@ -731,7 +1142,7 @@ void Aim() {
         const float depth = dot(seen, f);
         if (depth > 8.0f) {
           const float x = -dot(seen, l) / (depth * s.tanHalfFov[0]), y = dot(seen, u) / (depth * s.tanHalfFov[1]);
-          marked = std::fabs(x) < 1.0f && std::fabs(y) < 1.0f;
+          marked = st.aimMark && std::fabs(x) < 1.0f && std::fabs(y) < 1.0f;
           if (marked) overlay::SetMark(true, x, y);
         }
       }
@@ -758,6 +1169,9 @@ void BridgeFrame() {
   Publish();
   Aim();
   MatchJump();
+  QuietSteps();
+  HideCrosshair();
+  HideAmmo();
   const bool knifing = Knifing();
   // The picture is drawn last, over everything of WaW's, the pause menu
   // included. So while the game is paused it stands aside as well, and the
@@ -803,6 +1217,7 @@ void BridgeMain(HMODULE self) {
   DWORD lastReport = 0;
   for (;;) {
     shm.Beat();
+    MoreHealth(settings);
 
     // While the game is drawing frames, BridgeFrame publishes. If it is not
     // (loading, minimised), publish from here so the other side still hears.
@@ -834,10 +1249,15 @@ void BridgeMain(HMODULE self) {
     if (now - lastReport >= 1000) {
       lastReport = now;
       SteadyCamera(settings);
+      ShowHints(settings);
+      ScoreboardAlone(settings);
+      GodAtStart(settings);
+      NameCharacter(settings, shm.block(), peerAlive);
       if (config.Changed()) {
         log::Info("wawbf.ini changed, reloading");
         settings = LoadSettings(config);
         SteadyCamera(settings);
+        ShowHints(settings);
         overlay::SetDraw(config.GetInt("overlay", "draw", 0) != 0);
         std::lock_guard<std::mutex> lock(g_mutex);
         g_settings = settings;

@@ -79,9 +79,12 @@ std::atomic<unsigned> g_hiddenVertices{0}, g_hiddenPrimitives{0};  // SetHiddenS
 std::atomic<bool> g_hudKeepOn{false};          // SetHudKeep
 std::atomic<float> g_hudKeep[4];               // left, top, right, bottom: parts of the picture
 std::atomic<float> g_hudLens{1.7320508f};
-std::atomic<bool> g_hudNone{false};            // SetHudNone
+std::atomic<bool> g_hudMiddleOn{false};        // SetHudMiddle
+std::atomic<float> g_hudMiddle[4];
+std::atomic<bool> g_hudShowKeep{true}, g_hudShowMiddle{false};  // SetHudShown
 bool g_hudPart = false;  // the frame has reached the HUD; rendering thread only
-RECT g_hudRect{};        // and the part of the picture it is confined to, in points; rendering thread only
+RECT g_hudRects[2]{};    // and the parts of the picture it is confined to, in points; rendering thread only
+int g_hudRectCount = 0;
 std::atomic<TransformObserver> g_transformObserver{nullptr};
 
 std::mutex g_requestMutex;       // guards the request below until the recording starts
@@ -289,26 +292,26 @@ struct KeepAlpha {
 };
 
 // Whole-frame mode: once the frame has reached the HUD, each draw call is
-// confined to the part of the picture that is to be kept of it (SetHudKeep),
-// and put back as it was afterwards.
-struct HudOnly {
-  IDirect3DDevice9* device = nullptr;
+// confined to the parts of the picture that are to be kept of it (SetHudKeep,
+// SetHudMiddle): made once for each part, which do not overlap, and not at all
+// when there is none. The device is put back as it was afterwards.
+template <class Draw>
+HRESULT HudOnly(IDirect3DDevice9* d, Draw draw) {
+  if (!g_hudPart) return draw();
   DWORD was = FALSE;
   RECT rectWas{};
-  explicit HudOnly(IDirect3DDevice9* d) {
-    if (!g_hudPart) return;
-    d->GetRenderState(D3DRS_SCISSORTESTENABLE, &was);
-    d->GetScissorRect(&rectWas);
-    d->SetScissorRect(&g_hudRect);
-    d->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
-    device = d;
+  d->GetRenderState(D3DRS_SCISSORTESTENABLE, &was);
+  d->GetScissorRect(&rectWas);
+  d->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+  HRESULT result = D3D_OK;
+  for (int i = 0; i < g_hudRectCount; ++i) {
+    d->SetScissorRect(&g_hudRects[i]);
+    result = draw();
   }
-  ~HudOnly() {
-    if (!device) return;
-    device->SetScissorRect(&rectWas);
-    device->SetRenderState(D3DRS_SCISSORTESTENABLE, was);
-  }
-};
+  d->SetScissorRect(&rectWas);
+  d->SetRenderState(D3DRS_SCISSORTESTENABLE, was);
+  return result;
+}
 
 // Whole-frame mode: the one piece of ground the world has to have (SetHiddenShape).
 bool HiddenShape(D3DPRIMITIVETYPE type, UINT vertices, UINT primitives) {
@@ -401,13 +404,22 @@ HRESULT WINAPI SetTransformHook(IDirect3DDevice9* self, D3DTRANSFORMSTATETYPE st
     if (SUCCEEDED(self->GetRenderTarget(0, &target)) && target) {
       if (SUCCEEDED(target->GetDesc(&desc))) {
         const float w = static_cast<float>(desc.Width), h = static_cast<float>(desc.Height);
-        g_hudRect.left = std::lround(g_hudKeep[0].load(std::memory_order_relaxed) * w);
-        g_hudRect.top = std::lround(g_hudKeep[1].load(std::memory_order_relaxed) * h);
-        g_hudRect.right = std::lround(g_hudKeep[2].load(std::memory_order_relaxed) * w);
-        g_hudRect.bottom = std::lround(g_hudKeep[3].load(std::memory_order_relaxed) * h);
-        if (g_hudNone.load(std::memory_order_relaxed)) g_hudRect = RECT{0, 0, 0, 0};
+        const auto part = [w, h](const std::atomic<float>* of) {
+          return RECT{std::lround(of[0].load(std::memory_order_relaxed) * w), std::lround(of[1].load(std::memory_order_relaxed) * h),
+                      std::lround(of[2].load(std::memory_order_relaxed) * w), std::lround(of[3].load(std::memory_order_relaxed) * h)};
+        };
+        g_hudRectCount = 0;
+        if (g_hudShowKeep.load(std::memory_order_relaxed)) g_hudRects[g_hudRectCount++] = part(g_hudKeep);
+        if (g_hudMiddleOn.load(std::memory_order_relaxed) && g_hudShowMiddle.load(std::memory_order_relaxed)) {
+          g_hudRects[g_hudRectCount++] = part(g_hudMiddle);
+        }
         g_hudPart = true;
-        if (Recording()) Line("    the HUD from here: confined to %ld,%ld to %ld,%ld", g_hudRect.left, g_hudRect.top, g_hudRect.right, g_hudRect.bottom);
+        if (Recording()) {
+          Line("    the HUD from here: confined to %d part(s) of the picture", g_hudRectCount);
+          for (int i = 0; i < g_hudRectCount; ++i) {
+            Line("      %ld,%ld to %ld,%ld", g_hudRects[i].left, g_hudRects[i].top, g_hudRects[i].right, g_hudRects[i].bottom);
+          }
+        }
       }
       target->Release();
     }
@@ -430,8 +442,7 @@ HRESULT WINAPI DrawPrimitiveHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, 
     BeforeDraw(self);
   }
   const KeepAlpha keep(self);
-  const HudOnly hud(self);
-  return g_drawPrimitive(self, type, start, count);
+  return HudOnly(self, [&] { return g_drawPrimitive(self, type, start, count); });
 }
 
 HRESULT WINAPI DrawIndexedHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, INT baseVertex,
@@ -442,8 +453,7 @@ HRESULT WINAPI DrawIndexedHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, IN
   }
   if (HiddenShape(type, vertices, count)) return D3D_OK;
   const KeepAlpha keep(self);
-  const HudOnly hud(self);
-  return g_drawIndexed(self, type, baseVertex, minIndex, vertices, start, count);
+  return HudOnly(self, [&] { return g_drawIndexed(self, type, baseVertex, minIndex, vertices, start, count); });
 }
 
 HRESULT WINAPI DrawUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT count, const void* data,
@@ -453,8 +463,7 @@ HRESULT WINAPI DrawUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT co
     BeforeDraw(self);
   }
   const KeepAlpha keep(self);
-  const HudOnly hud(self);
-  return g_drawUp(self, type, count, data, stride);
+  return HudOnly(self, [&] { return g_drawUp(self, type, count, data, stride); });
 }
 
 HRESULT WINAPI DrawIndexedUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT minIndex,
@@ -465,8 +474,7 @@ HRESULT WINAPI DrawIndexedUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, 
     BeforeDraw(self);
   }
   const KeepAlpha keep(self);
-  const HudOnly hud(self);
-  return g_drawIndexedUp(self, type, minIndex, vertices, count, indices, format, data, stride);
+  return HudOnly(self, [&] { return g_drawIndexedUp(self, type, minIndex, vertices, count, indices, format, data, stride); });
 }
 
 template <class Fn>
@@ -542,7 +550,23 @@ void SetHudKeep(bool on, float left, float top, float right, float bottom, float
   }
 }
 
-void SetHudNone(bool none) { g_hudNone.store(none, std::memory_order_relaxed); }
+void SetHudMiddle(bool on, float left, float top, float right, float bottom) {
+  const float middle[4] = {left, top, right, bottom};
+  bool changed = g_hudMiddleOn.exchange(on) != on;
+  for (int i = 0; i < 4; ++i) changed = (g_hudMiddle[i].exchange(middle[i]) != middle[i]) || changed;
+  if (changed) {
+    if (on) {
+      log::Info("frame probe: and, when there is something to aim, what falls in %.3f,%.3f to %.3f,%.3f (the crosshair)", left, top, right, bottom);
+    } else {
+      log::Info("frame probe: nothing of the HUD is drawn in the middle of the picture");
+    }
+  }
+}
+
+void SetHudShown(bool keep, bool middle) {
+  g_hudShowKeep.store(keep, std::memory_order_relaxed);
+  g_hudShowMiddle.store(middle, std::memory_order_relaxed);
+}
 
 void SetTransparentClears(bool on) {
   if (g_transparentClears.exchange(on) != on) {

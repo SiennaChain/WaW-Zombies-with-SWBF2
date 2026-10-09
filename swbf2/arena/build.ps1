@@ -33,6 +33,9 @@ param(
     [ValidateSet('gcw', 'cw', 'heroes', 'none')][string]$AutoStart = 'gcw',
     [switch]$Ground,
     [double]$HudLift = 0.17,
+    # Where the word that says a weapon has overheated goes (across, down; parts of the screen):
+    # above the weapons, inside what wawbf.ini's hud_keep leaves of the HUD.
+    [double[]]$OverheatAt = @(0.165, 0.572),
     [switch]$FullHud,
     [switch]$Fresh,
     [switch]$NoInstall
@@ -221,7 +224,7 @@ try {
 $hudFile = 'Common\hud\PC\1playerhud.hud'
 $hud = $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $ModTools "data\$hudFile")))
 if (-not $FullHud) {
-    $block = ''; $placed = $true; $hidden = 0; $raised = 0
+    $block = ''; $placed = $true; $hidden = 0; $raised = 0; $moved = 0
     $hudLines = $hud -split "`r?`n"
     for ($i = 0; $i -lt $hudLines.Count; $i++) {
         if ($hudLines[$i] -match '^(\w+)\("([^"]+)"\)') { $block = $Matches[2]; $placed = ($Matches[1] -eq 'FileInfo'); continue }
@@ -232,16 +235,96 @@ if (-not $FullHud) {
             $placed = $true
             if ($block -eq 'player1weaponinformation') {
                 $hudLines[$i] = '{0}Position({1}, {2:F6}, {3}, "Viewport")' -f $Matches[1], $Matches[2], ([double]$Matches[3] - $HudLift), $Matches[4]; $raised++
+            } elseif ($block -eq 'player1weapon1overheat') {
+                # The word that comes up when a weapon has overheated. The game has it low in the
+                # middle of the screen; here it goes just above the weapons, inside the part of
+                # the HUD that is kept.
+                $hudLines[$i] = '{0}Position({1:F6}, {2:F6}, {3}, "Viewport")' -f $Matches[1], $OverheatAt[0], $OverheatAt[1], $Matches[4]; $moved++
             } else {
                 $hudLines[$i] = '{0}Position(-10.000000, -10.000000, {1}, "Viewport")' -f $Matches[1], $Matches[4]; $hidden++
             }
         }
     }
-    if ($raised -ne 1 -or $hidden -lt 30) { throw "the HUD file is not laid out as this script expects (raised $raised, hidden $hidden)" }
+    if ($raised -ne 1 -or $moved -ne 1 -or $hidden -lt 30) { throw "the HUD file is not laid out as this script expects (raised $raised, moved $moved, hidden $hidden)" }
     $hud = $hudLines -join "`r`n"
-    "HUD: the weapons raised by $HudLift of the screen, $hidden other parts put off the screen"
+    "HUD: the weapons raised by $HudLift of the screen, the overheating warning put above them, $hidden other parts put off the screen"
 } else { 'HUD: the game''s own' }
 Write-IfChanged (Join-Path $proj $hudFile) $hud
+
+# The Clone Wars troopers' weapons, in a roster that also has the Empire's and
+# the Alliance's. The game takes in one era's bank of recordings for a mission
+# and no second one (docs/PHASE3.md has the measurements), so with the other
+# era's read, a clone's rifle and a battle droid's are silent. A small bank of
+# our own, read first, is taken in as well: it holds just those weapons'
+# firing sounds, under the names the weapons ask for.
+#
+# The tools have everything to build a bank but the recordings. The game has
+# those: every era's bank draws on one file, common.bnk, which begins with a
+# table (for each recording a name, as a hash, its rate and its length) and
+# then holds them one after another, 16 bits a point, one channel. The ones
+# wanted are copied out of it as .wav files for the tools to pack.
+$ownSounds = [ordered]@{          # what a weapon asks for = the recording it plays
+    rep_weap_inf_rifle_fire           = 'wpn_rep_blaster_fire'
+    rep_weap_inf_pistol_fire          = 'wpn_rep_pistol_fire'
+    cis_weap_inf_rifle_fire           = 'wpn_cis_blaster_fire'
+    cis_weap_inf_rocket_launcher_fire = 'wpn_cis_rcktlauncher_fire'
+}
+$soundDir = Join-Path $proj "Sound\worlds\$Id"
+$bankFile = Join-Path $GameData 'data\_lvl_pc\sound\common.bnk'
+if (-not (Test-Path -LiteralPath $bankFile)) { throw "the game's recordings are not where this script looks for them: $bankFile" }
+Add-Type -TypeDefinition @'
+using System; using System.Collections.Generic; using System.IO; using System.Text;
+public static class WawBank {
+    public static uint Hash(string s) { uint h = 0x811C9DC5; foreach (char c in s) h = (h ^ (uint)(c | 0x20)) * 0x01000193; return h; }
+    // Writes each of `names` found in the bank as <folder>\<name>.wav; returns those it wrote.
+    public static List<string> Copy(string bank, string[] names, string folder) {
+        var wanted = new Dictionary<uint, string>(); foreach (string n in names) wanted[Hash(n)] = n;
+        var wrote = new List<string>();
+        using (var f = File.OpenRead(bank)) {
+            var r = new BinaryReader(f); f.Position = 24;
+            long header = -1, at = 0; uint name = 0; int rate = 0, bytes = 0; bool inSample = false;
+            var found = new List<object[]>();
+            while (f.Position + 8 <= f.Length && found.Count < wanted.Count) {
+                uint key = r.ReadUInt32(), value = r.ReadUInt32();
+                if (key == 0x0FB40705) header = value;                        // how long the table is
+                else if (key == 0x37386AE0) { name = value; inSample = true; } // a recording: its name
+                else if (inSample && key == 0x2FB31C01) rate = (int)value;     // points a second
+                else if (inSample && key == 0x23A0D95C) bytes = (int)value;    // its length
+                else if (inSample && key == 0x809608B6) {                      // the last thing said of each
+                    if (wanted.ContainsKey(name)) found.Add(new object[] { wanted[name], rate, bytes, at });
+                    at += bytes; inSample = false;
+                }
+                else if (key != 0x8D39BDE6 && key != 0xB99D8552 && key != 0x98B889CE && key != 0x23A0D95C && key != 0x694AAA0B &&
+                         key != 0x8EBF7143 && key != 0x2E789FB4 && key != 0x1D48FEEF) break;   // not the table any more
+            }
+            long start = 40 + header;
+            if (header <= 0 || start % 2048 != 0) throw new InvalidDataException("common.bnk is not laid out as expected");
+            foreach (object[] one in found) {
+                var data = new byte[(int)one[2]]; f.Position = start + (long)one[3];
+                if (f.Read(data, 0, data.Length) != data.Length) throw new InvalidDataException("common.bnk ends early");
+                using (var o = new BinaryWriter(File.Create(Path.Combine(folder, (string)one[0] + ".wav")))) {
+                    o.Write(Encoding.ASCII.GetBytes("RIFF")); o.Write(36 + data.Length); o.Write(Encoding.ASCII.GetBytes("WAVEfmt ")); o.Write(16);
+                    o.Write((short)1); o.Write((short)1); o.Write((int)one[1]); o.Write((int)one[1] * 2); o.Write((short)2); o.Write((short)16);
+                    o.Write(Encoding.ASCII.GetBytes("data")); o.Write(data.Length); o.Write(data);
+                }
+                wrote.Add((string)one[0]);
+            }
+        }
+        return wrote;
+    }
+}
+'@
+$effects = Join-Path $soundDir 'effects'
+if (-not (Test-Path -LiteralPath $effects)) { [void](New-Item -ItemType Directory -Path $effects -Force) }
+$copied = [WawBank]::Copy($bankFile, [string[]]@($ownSounds.Values), $effects)
+$lost = @($ownSounds.Values | Where-Object { $copied -notcontains $_ })
+if ($lost.Count) { throw "not found in the game's recordings: $($lost -join ', ')" }
+$bank = "$($Id.ToLower())cw"
+Write-IfChanged (Join-Path $soundDir "$($Id.ToLower()).req") "ucft`r`n{`r`n    REQN`r`n    {`r`n        `"lvl`"`r`n        `"$bank`"`r`n    }`r`n}`r`n"
+Write-IfChanged (Join-Path $soundDir "$bank.req") "ucft`r`n{`r`n    REQN`r`n    {`r`n        `"bnk`"`r`n        `"align=2048`"`r`n        `"$bank`"`r`n    }`r`n    REQN`r`n    {`r`n        `"config`"`r`n        `"$bank`"`r`n    }`r`n}`r`n"
+Write-IfChanged (Join-Path $soundDir "$bank.sfx") ((($ownSounds.Values | ForEach-Object { "effects\$_.wav -resample xbox 22050 pc 44100`r`n" }) -join ''))
+Write-IfChanged (Join-Path $soundDir "$bank.snd") ((($ownSounds.Keys | ForEach-Object { "SoundProperties()`r`n{`r`n    Name(`"$_`");`r`n    Group(`"weapons`");`r`n    Inherit(`"weapon_template`");`r`n    SampleList()`r`n    {`r`n        Sample(`"$($ownSounds[$_])`", 1.0);`r`n    }`r`n}`r`n`r`n" }) -join ''))
+"sounds: $($copied.Count) recordings copied out of the game's for a bank of our own ($bank)"
 
 # Ours: the rosters (one mission each) with the script they share, the list of
 # missions to pack, and the script that registers the map and can start it.
@@ -292,9 +375,19 @@ try {
     $env:NoDefaultCurrentDirectoryInExePath = $null
     $env:MUNGE_BIN_DIR = $toolsBin
     cmd /c ".\munge.bat /WORLD $Id /COMMON /NOMESSAGES > munge_output.txt 2>&1"
+    # The bank of our own: the tools' script for one folder of sound, which packs the recordings,
+    # compiles the definitions and makes the level file. It is run from the project's own folder
+    # and finds its programs from there.
+    $lower = $Id.ToLower()
+    $stale = Join-Path $proj "_LVL_PC\sound\$lower.lvl"
+    if (Test-Path -LiteralPath $stale) { [IO.File]::Delete($stale) }
+    Set-Location $proj
+    foreach ($pair in @{ MUNGE_LANGVERSION = 'English'; MUNGESTREAMS = '0'; SOUNDLOG = '1'; SOUNDNODATECHECK = '1'; MUNGE_LOG = $log }.GetEnumerator()) { Set-Item -Path "env:$($pair.Key)" -Value $pair.Value }
+    cmd /c "soundmungedir.bat _BUILD\sound\worlds\$lower\MUNGED\PC sound\worlds\$lower sound\worlds\$lower\PC PC _BUILD _LVL_PC\sound _BUILD\sound $lower > _BUILD\soundmunge_output.txt 2>&1"
 } finally {
     Pop-Location
     foreach ($name in $saved.Keys) { Set-Item -Path "env:$name" -Value $saved[$name] }
+    foreach ($name in 'MUNGE_LANGVERSION', 'MUNGESTREAMS', 'SOUNDLOG', 'SOUNDNODATECHECK', 'MUNGE_LOG') { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
 }
 "munge finished in {0:N0} s" -f $sw.Elapsed.TotalSeconds
 if (Test-Path -LiteralPath $log) {
@@ -315,6 +408,7 @@ $outputs = [ordered]@{
     (Join-Path $proj '_LVL_PC\ingame.lvl')        = 'data\_LVL_PC\ingame.lvl'    # the HUD, cut down
     (Join-Path $proj '_LVL_PC\mission.lvl')       = 'data\_LVL_PC\mission.lvl'
     (Join-Path $proj "_LVL_PC\$Id\$Id.lvl")       = "data\_LVL_PC\$Id\$Id.lvl"
+    (Join-Path $proj "_LVL_PC\sound\$($Id.ToLower()).lvl") = "data\_LVL_PC\sound\$($Id.ToLower()).lvl"   # the Clone Wars troopers' weapons
 }
 $missing = @($outputs.Keys | Where-Object { -not (Test-Path -LiteralPath $_) })
 foreach ($o in $outputs.Keys) { if (Test-Path -LiteralPath $o) { '  built {0,12:N0} bytes  {1}' -f (Get-Item -LiteralPath $o).Length, $o } else { "  MISSING  $o" } }

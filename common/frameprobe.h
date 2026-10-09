@@ -76,10 +76,16 @@ void SetTransparentClears(bool on);
 void SetHiddenShape(unsigned vertices, unsigned primitives);
 void SetHudKeep(bool on, float left, float top, float right, float bottom, float lens);
 
-// While this is set, nothing of the HUD is drawn at all. For when the game
-// is zoomed in: it then draws its scope over the whole screen in place of the
-// weapons, and a corner of that is all that would show in the part kept.
-void SetHudNone(bool none);
+// A second part of the HUD that can be kept: the middle of the picture, where
+// the game draws its crosshair. It must not overlap the first. Only with
+// SetHudKeep on.
+void SetHudMiddle(bool on, float left, float top, float right, float bottom);
+
+// Which of the two parts are drawn just now: `keep` the one SetHudKeep names,
+// `middle` the one SetHudMiddle names. Neither: nothing of the HUD is drawn.
+// The weapons go while the game is zoomed in (it draws something else where
+// they were); the crosshair is wanted only when there is something to aim.
+void SetHudShown(bool keep, bool middle);
 
 // Told of every SetTransform the game makes, on its rendering thread, before
 // the call goes through: which transform (D3DTS_VIEW is 2, D3DTS_WORLD 256),

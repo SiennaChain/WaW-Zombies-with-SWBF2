@@ -28,6 +28,7 @@
 #include "overlay.h"
 #include "pad.h"
 #include "shm.h"
+#include "devices.h"
 #include "sound.h"
 
 namespace wawbf {
@@ -149,6 +150,7 @@ struct Settings {
   bool keepRunning = false;
   bool hidden = false;
   bool soundInBackground = true;  // [swbf2] sound_in_background: the game is heard while another window is in front
+  bool devicesInBackground = false;  // [swbf2] devices_in_background: and whether it goes on reading the keyboard and controller then
   bool forwardFire = false;      // pull this game's trigger when the WaW player pulls theirs
   ValueSpec asks[kAsks];         // what to write to ask the mission script for each of kAskNames
   int askKeys[kAsks] = {};       // and the key that asks (a Windows virtual-key code)
@@ -164,6 +166,9 @@ struct Settings {
   int strafeAxis = -1;           // and which is "to the left"
   float stickFullAt = 4.8f;      // the speed, metres a second, at which the stick is pushed all the way (WaW's run)
   bool saberSprint = false;      // whether a character with a lightsaber is told to sprint when WaW's player does
+  bool sprintAttack = true;      // and, when it is not, whether it is for the blow struck out of a sprint
+  int sprintAttackLeadMs = 120;  // how long the sprint is held before that blow is struck
+  int sprintAttackHoldMs = 250;  // and how long the blow's button is then held
   float treadmill = 0;           // [debug] treadmill: a speed the unit is given while WaW's player stands still
   ValueSpec crouched;            // the unit is crouched while this address has these bits set (u8)
   AddressSpec energy;            // the unit's energy, which sprinting and jumping spend
@@ -233,6 +238,9 @@ Settings LoadSettings(const Config& config) {
   s.strafeAxis = config.GetInt("swbf2", "strafe_axis", s.strafeAxis);
   s.stickFullAt = std::max(0.5f, config.GetFloat("swbf2", "stick_full_at", s.stickFullAt));
   s.saberSprint = config.GetInt("swbf2", "saber_sprint", 0) != 0;
+  s.sprintAttack = config.GetInt("swbf2", "sprint_attack", 1) != 0;
+  s.sprintAttackLeadMs = std::max(0, std::min(1000, config.GetInt("swbf2", "sprint_attack_lead_ms", s.sprintAttackLeadMs)));
+  s.sprintAttackHoldMs = std::max(50, std::min(1000, config.GetInt("swbf2", "sprint_attack_hold_ms", s.sprintAttackHoldMs)));
   s.treadmill = std::min(30.0f, std::max(0.0f, config.GetFloat("debug", "treadmill", 0.0f)));
   ParseValueSpec("[swbf2] unit_crouched", config.GetString("swbf2", "unit_crouched"), s.crouched);
   s.haveEnergy = config.GetAddress("swbf2", "unit_energy", s.energy);
@@ -271,6 +279,7 @@ Settings LoadSettings(const Config& config) {
   s.keepRunning = config.GetInt("swbf2", "keep_running", 0) != 0;
   s.hidden = config.GetInt("swbf2", "hidden", 0) != 0;
   s.soundInBackground = config.GetInt("swbf2", "sound_in_background", 1) != 0;
+  s.devicesInBackground = config.GetInt("swbf2", "devices_in_background", 0) != 0;
   s.forwardFire = config.GetInt("swbf2", "forward_fire", 0) != 0;
   s.functions.fire = config.GetInt("swbf2", "fire_function", s.functions.fire);
   s.functions.aim = config.GetInt("swbf2", "aim_function", s.functions.aim);
@@ -636,14 +645,17 @@ bool Normalise(Vec3& v) {
 // The arena's mission script knows which class it put the player in the
 // world as, and this bridge cannot ask it. So the script writes the answer
 // where the bridge can read it: the unit's full health, which it sets to
-// 1e37 * (1 + kit / 1024). (The unit cannot be hurt; its health means nothing
-// else.) swbf2/arena/WAW_arena.lua has the other end.
+// 1e37 * (1 + what it says / 65536). (The unit cannot be hurt; its health
+// means nothing else.) swbf2/arena/WAW_arena.lua has the other end.
 //
-// Two things about the character come with the kit, as numbers added to it.
+// Three things about the character come with the kit, as numbers added to it.
 const uint32_t kKitNumber = 31;  // the kit itself is what is left under these
 const uint32_t kKitHero = 32;    // a hero or a villain: always shown from behind
 const uint32_t kKitMelee = 64;   // fights with a lightsaber
+const uint32_t kKitWho = 128;    // and above those, who it is: a number from that script's list (several share a kit)
 std::atomic<bool> g_melee{false};
+std::atomic<int> g_dashFire{0};  // a blow struck out of a sprint: -1 kept back for now, 1 being struck, 0 as WaW has the button
+std::atomic<bool> g_crosshairKept{false};  // the middle of the HUD, where the crosshair is, is part of the picture sent to WaW
 
 uint32_t Kit(const Settings& s) {
   if (!s.haveKit || !s.havePosition || !IsUnit(s, mem::Resolve(s.position))) return 0;
@@ -651,8 +663,8 @@ uint32_t Kit(const Settings& s) {
   const uintptr_t address = mem::Resolve(s.kit);
   if (!address || !mem::Read(address, &full, sizeof(full))) return 0;
   const float over = full / 1e37f - 1.0f;
-  if (!(over > -0.0001f && over < 0.25f)) return 0;  // not a health this arena set
-  return static_cast<uint32_t>(over * 1024.0f + 0.5f);
+  if (!(over > -0.00001f && over < 0.25f)) return 0;  // not a health this arena set
+  return static_cast<uint32_t>(over * 65536.0f + 0.5f);
 }
 
 // Whether the game's view is third person.
@@ -915,6 +927,11 @@ void ForwardButtons(SharedBlock* block) {
       if (buttons & kWawButtonAim) buttons |= kWawButtonAbility;
       buttons &= ~static_cast<uint32_t>(kWawButtonAim);
     }
+    // A blow struck out of a sprint: kept back while the character is put
+    // into its sprint, then struck (the bridge's main loop says which).
+    const int dash = g_dashFire.load(std::memory_order_relaxed);
+    if (dash < 0) buttons &= ~static_cast<uint32_t>(kWawButtonFire);
+    if (dash > 0) buttons |= kWawButtonFire;
     // And WaW's scripts say when there is an ability to use: a grenade or a
     // rocket left.
     if (!(waw.flags & kWawAbilityReady)) buttons &= ~kWawButtonAbility;
@@ -1016,7 +1033,12 @@ void TellZoom(const Settings& s) {
   // While the camera is being given WaW's lens the field of view says
   // nothing about this game's zoom; the camera's own zoom factor does.
   if (g_gameZoom > 0) zoomed = g_gameZoom > 1.2f ? 1 : 0;
-  frameprobe::SetHudNone(zoomed == 1);  // zoomed in, the game draws a scope where the weapons were
+  // What is left of the HUD. The weapons, except zoomed in, when the game
+  // draws something else where they were. And the middle of the picture, for
+  // a character with something to aim: this game's crosshair, with the ring
+  // round it that shows a weapon heating up. (WaW's own crosshair is switched
+  // off meanwhile, by its bridge.) A character with a lightsaber has neither.
+  frameprobe::SetHudShown(zoomed != 1, !g_melee.load(std::memory_order_relaxed));
   same = zoomed == last ? same + 1 : 0;
   last = zoomed;
   if (same < 3 || zoomed == told) return;
@@ -1122,7 +1144,15 @@ DWORD g_seekThrownFrom = 0;            // an ability was used then, and what it 
 int g_seekThrownLooks = 0;             // how many wide searches that has had
 bool g_abilityWasInUse = false;
 uintptr_t g_thrownLastAt = 0;          // where the last one was found: the next is usually the same place or beside it
-uintptr_t g_nothingThrownBy = 0;       // an ability weapon that was used and threw nothing (a rocket, the Force)
+// An ability that was used and threw nothing (a rocket, the Force), as whose
+// it is and which of theirs: not looked for again. (It was first kept as
+// where the ability's weapon is in memory. A new character's weapons are put
+// where the last one's were, so a Jedi's Force push, which throws nothing,
+// kept the grenade of whoever was played next from being looked for: the
+// user saw the troopers' grenades in flight and nobody else's.)
+uint32_t g_nothingThrownBy = 0;
+uint32_t g_seekThrownBy = 0;           // whose ability is being looked for now, kept the same way
+uint32_t g_foundNothingBy = 0;         // and whose the last search to find nothing was: it takes two running to give one up
 
 // Call with g_mutex held, once a frame, from the game's own thread.
 void PutGrenadeAway(const Settings& s) {
@@ -1141,9 +1171,11 @@ void PutGrenadeAway(const Settings& s) {
   // through everything near the unit, which costs a frame of this game's each
   // time. An ability that turns out to throw nothing is not looked for again.
   const InHand hand = ReadInHand(s);
-  if (hand.abilityInUse && !g_abilityWasInUse && hand.abilityAt != g_nothingThrownBy) {
+  const uint32_t ability = (Kit(s) << 4) | (hand.ability & 15) | 0x80000000u;  // whose, and which of theirs
+  if (hand.abilityInUse && !g_abilityWasInUse && ability != g_nothingThrownBy) {
     g_seekThrownFrom = now | 1;
     g_seekThrownLooks = 0;
+    g_seekThrownBy = ability;
   }
   g_abilityWasInUse = hand.abilityInUse;
   if (!g_seekThrownFrom) return;
@@ -1172,12 +1204,13 @@ void PutGrenadeAway(const Settings& s) {
     mem::Write(found + kThrownGravity, &weightless, sizeof(weightless));
     mem::Write(found + kThrownFlags, &kThrownAtRest, sizeof(kThrownAtRest));
     mem::Write(found + kThrownFuse, &fuse, sizeof(fuse));
-    static bool said = false;
-    if (!said) log::Info("grenade: this game's has left the hand (0x%p) and is put out of sight; so will the rest be", reinterpret_cast<void*>(found));
-    said = true;
+    g_foundNothingBy = 0;
+    log::Info("grenade: this game's has left the hand (0x%p, %ld ms after the throw began) and is put out of sight", reinterpret_cast<void*>(found),
+              static_cast<long>(waited));
   } else if (g_seekThrownLooks >= 6) {
     g_seekThrownFrom = 0;
-    g_nothingThrownBy = hand.abilityAt;
+    if (g_foundNothingBy == g_seekThrownBy) g_nothingThrownBy = g_seekThrownBy;
+    g_foundNothingBy = g_seekThrownBy;
     log::Info("grenade: nothing of the kind was thrown by that ability (%d of the kind were there; the last one's owner 0x%p, this unit 0x%p, its age %.2f s)",
               seen.count, reinterpret_cast<void*>(seen.owner), reinterpret_cast<void*>(unit), seen.age);
   }
@@ -1239,6 +1272,9 @@ void BridgeMain(HMODULE self) {
   Settings settings = LoadSettings(config);
   // Before the game starts its own sound up: only sounds made after this play in the background.
   if (settings.soundInBackground) sound::KeepPlaying();
+  // And the player's keyboard and controller, which are World at War's while
+  // that is the window in front, are not this game's to act on as well.
+  if (!settings.devicesInBackground) devices::QuietInBackground();
   config.Changed();  // the load above is current; only later saves count
   // The picture for WaW (Phase 2), and the probe's own experiments. Publishing
   // needs the frame cut at the depth clear that comes before the first-person
@@ -1264,6 +1300,11 @@ void BridgeMain(HMODULE self) {
     const bool some = std::sscanf(config.GetString("overlay", "hud_keep").c_str(), " %f , %f , %f , %f", &keep[0], &keep[1], &keep[2], &keep[3]) == 4 &&
                       keep[2] > keep[0] && keep[3] > keep[1];
     frameprobe::SetHudKeep(some, keep[0], keep[1], keep[2], keep[3], config.GetFloat("overlay", "hud_lens", 1.7320508f));
+    float middle[4] = {0, 0, 0, 0};
+    const bool crosshair = std::sscanf(config.GetString("overlay", "hud_middle").c_str(), " %f , %f , %f , %f", &middle[0], &middle[1], &middle[2], &middle[3]) == 4 &&
+                           middle[2] > middle[0] && middle[3] > middle[1];
+    frameprobe::SetHudMiddle(some && crosshair, middle[0], middle[1], middle[2], middle[3]);
+    g_crosshairKept.store(publish && some && crosshair, std::memory_order_relaxed);
     overlay::SetPublish(publish);
     input::SetForced(static_cast<uint32_t>(config.GetInt("debug", "force_buttons", 0)));
     input::SetForcedFunctions(std::strtoul(config.GetString("debug", "force_functions", "0").c_str(), nullptr, 0));
@@ -1383,10 +1424,11 @@ void BridgeMain(HMODULE self) {
 
     const bool melee = (says & kKitMelee) != 0;
     state.kit = says & kKitNumber;
+    state.who = says / kKitWho;
     static uint32_t lastSays = ~0u;
     if (says != lastSays) {
-      log::Info("kit: the character in play carries kit %u%s%s", state.kit, (says & kKitHero) ? ", is a hero" : "",
-                melee ? ", and fights with a lightsaber" : "");
+      log::Info("kit: the character in play carries kit %u%s%s (character %u)", state.kit, (says & kKitHero) ? ", is a hero" : "",
+                melee ? ", and fights with a lightsaber" : "", state.who);
       lastSays = says;
     }
     // A character with a lightsaber is always shown from behind. Anyone with
@@ -1401,6 +1443,10 @@ void BridgeMain(HMODULE self) {
       g_melee = melee;
       input::SetMelee(melee);
     }
+    // This game's crosshair is in the picture for anyone with something to
+    // aim; WaW leaves its own out then.
+    if (following && state.kit && !melee && g_crosshairKept.load(std::memory_order_relaxed)) state.flags |= kBfCrosshair;
+    if (following && state.kit && melee) state.flags |= kBfMelee;
 
     // The ability: which is selected, and each use of it.
     const InHand hand = ReadInHand(settings);
@@ -1484,7 +1530,37 @@ void BridgeMain(HMODULE self) {
       // ordinary run, made for 9, the same character takes a stride every
       // 0.8 s at WaW's sprint. So that is what it does. ([swbf2] saber_sprint
       // = 1 brings the game's own sprint back.)
-      const bool sprinting = (waw.flags & kWawSprinting) && settings.sprintFunction >= 0 && (!melee || settings.saberSprint);
+      //
+      // But the blow such a character strikes out of a sprint is one of its
+      // own, and the game only gives it to a character that is sprinting when
+      // the button goes down. So when WaW's player strikes while sprinting,
+      // the character is put into its sprint for just that: sprint is held,
+      // the blow is kept back for a moment while the sprint takes
+      // (sprint_attack_lead_ms), then struck (and held for
+      // sprint_attack_hold_ms, so that a tap is not lost), and the sprint let
+      // go again. WaW's player has stopped sprinting by the time the button
+      // reaches here, hence "a moment ago".
+      static DWORD wawSprintedAt = 0, dashAt = 0;
+      static bool fireWasHeld = false;
+      if (waw.flags & kWawSprinting) wawSprintedAt = now | 1;
+      const bool fireHeld = (waw.buttons & kWawButtonFire) != 0;
+      if (melee && !settings.saberSprint && settings.sprintAttack && settings.sprintFunction >= 0 && fireHeld && !fireWasHeld && !dashAt &&
+          wawSprintedAt && now - wawSprintedAt < 250) {
+        dashAt = now | 1;
+        log::Info("sprint attack: WaW's player struck out of a sprint; sprinting here for the blow");
+      }
+      fireWasHeld = fireHeld;
+      bool dashing = false;
+      if (dashAt && melee) {
+        const DWORD since = now - dashAt;
+        dashing = since < static_cast<DWORD>(settings.sprintAttackLeadMs + settings.sprintAttackHoldMs);
+        g_dashFire.store(!dashing ? 0 : since < static_cast<DWORD>(settings.sprintAttackLeadMs) ? -1 : 1, std::memory_order_relaxed);
+        if (!dashing) dashAt = 0;
+      } else {
+        dashAt = 0;
+        g_dashFire.store(0, std::memory_order_relaxed);
+      }
+      const bool sprinting = settings.sprintFunction >= 0 && (dashing || ((waw.flags & kWawSprinting) && (!melee || settings.saberSprint)));
       input::SetHeld(sprinting ? 1u << settings.sprintFunction : 0);
       // And jumps when they jump. How high is this game's own business: the
       // camera goes up with the unit, so all that shows is the jump itself,
@@ -1495,6 +1571,7 @@ void BridgeMain(HMODULE self) {
       jumpWasHeld = jumpHeld;
     } else {
       input::SetHeld(0);
+      g_dashFire.store(0, std::memory_order_relaxed);
     }
     // [debug] force_axis = <axis> <value>: pushes a stick axis, to find which is which.
     if (settings.debugAxis >= 0) input::SetAxis(settings.debugAxis, settings.debugAxisValue);
@@ -1527,6 +1604,7 @@ void BridgeMain(HMODULE self) {
     if (between) {
       out.flags = shown.flags;
       out.kit = shown.kit;
+      out.who = shown.who;
       out.ability = shown.ability;
       std::memcpy(out.rawPosition, shown.rawPosition, sizeof(out.rawPosition));
       std::memcpy(out.positionInWaw, shown.positionInWaw, sizeof(out.positionInWaw));

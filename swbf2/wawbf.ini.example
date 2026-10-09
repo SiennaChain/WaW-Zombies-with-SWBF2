@@ -60,6 +60,13 @@ hidden = 0
 ; War is always). Only sounds the game makes after the bridge is loaded are
 ; changed, so it takes a restart.
 sound_in_background = 1
+; The game still reads the player's keyboard, mouse and controller itself,
+; and is kept running as if it were in front: so a key or button pressed for
+; World at War did whatever it does here as well (Tab or a controller's Back
+; button brought up this game's list of players over the HUD). 0: while its
+; window is not really the one in front, every device reads as untouched;
+; what the game needs of the player, the bridge gives it. 1: as the game was.
+devices_in_background = 0
 ; 1 = pull this game's trigger while the WaW player holds theirs. The game's
 ; "fire" is switched on inside the game itself, after it has read its own
 ; devices, so it does not matter what fire is bound to in this game's options
@@ -190,6 +197,15 @@ stick_full_at = 4.8
 ; ordinary run, made for 9, takes a stride every 0.8 s at that speed, so that
 ; is what they do instead. 1 = the game's own sprint for them as well.
 saber_sprint = 0
+; But the blow such a character strikes out of a sprint is one of its own,
+; and the game gives it only to a character sprinting as the button goes
+; down. sprint_attack = 1: when WaW's player strikes while sprinting, the
+; character is put into its sprint for just that. The sprint is held for
+; sprint_attack_lead_ms before the blow is struck (it has to have taken), and
+; the blow's button then for sprint_attack_hold_ms.
+sprint_attack = 1
+sprint_attack_lead_ms = 120
+sprint_attack_hold_ms = 250
 unit_energy = BattlefrontII.exe+0x1A296B0 > 0x8F4
 unit_energy_full = 100
 
@@ -226,7 +242,7 @@ force_buttons = 0
 ; Hold game functions on directly, one bit each (0x1 = function 0, 0x2 =
 ; function 1, 0x4 = function 2 ...), for finding out which number does what.
 ; Needs forward_fire = 1.
-force_functions = 0
+force_functions = 0
 ; Pushes one of the game's four stick axes to a value, to find which is which:
 ;   force_axis = <axis 0-3> <value>
 force_axis =
@@ -283,13 +299,20 @@ cut = 0
 ; hud_keep: of this game's HUD only what falls in this part of the picture is
 ; drawn (left, top, right, bottom, each 0 to 1 across or down it): the place
 ; of the weapons and abilities, as the arena's build raises them (its
-; -HudLift has to agree with this). Everything else of the HUD, the game's
-; own crosshair included, is not drawn; while the game is zoomed in, nothing
-; of it is. hud_lens is how the HUD's part of the frame is known: the x scale
-; of the projection the game draws it through (1.7321 at 16:9). Leave
-; hud_keep out for the whole HUD.
+; -HudLift has to agree with this). Nothing else of the HUD is drawn, but for
+; hud_middle; and zoomed in, the weapons are not either (the game draws
+; something else in their place). hud_lens is how the HUD's part of the frame
+; is known: the x scale of the projection the game draws it through (1.7321
+; at 16:9). Leave hud_keep out for the whole HUD.
+;
+; hud_middle: a second part that is kept, the middle of the picture, where the
+; game draws its crosshair and, round it, the ring that shows the magazine or
+; a weapon heating up. For a character with something to aim, in every view;
+; WaW switches its own crosshair off meanwhile. It must not overlap hud_keep.
+; Leave it out for no crosshair of this game's (and WaW's own stays).
 hide_ground = 81, 149
 hud_keep = 0, 0.57, 0.33, 0.745
+hud_middle = 0.4, 0.33, 0.6, 0.67
 hud_lens = 1.7321
 
 [proxy]

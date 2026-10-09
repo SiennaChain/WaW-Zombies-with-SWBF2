@@ -71,7 +71,8 @@ local OUT_OF_SIGHT = -2000
 --
 -- The bridge cannot ask this script anything, and the game keeps no class
 -- names in memory for it to read. But it can read the unit's health, and
--- nothing else uses that: full health is FULL_HEALTH * (1 + kit / 1024).
+-- nothing else uses that: full health is FULL_HEALTH * (1 + says / 65536),
+-- where what it says is the kit with the numbers further down added.
 local KIT = {
     all_hero_hansolo_tat = 1,                                   -- a heavy pistol
     rep_inf_ep3_rifleman = 2, imp_inf_rifleman = 2,             -- a blaster rifle and a pistol
@@ -85,8 +86,10 @@ local KIT = {
     rep_hero_aalya       = 8,                                   -- throwing it, and Force pull
     rep_hero_anakin      = 9, imp_hero_darthvader = 9,          -- throwing it, and Force choke
     rep_hero_yoda        = 10,                                  -- Force pull and Force push
-    imp_hero_emperor     = 11, cis_hero_countdooku = 11,        -- Force lightning and Force choke
+    cis_hero_countdooku  = 11,                                  -- Force lightning and Force choke
     cis_hero_grievous    = 12,                                  -- nothing but the lightsabers
+    imp_hero_emperor     = 13,                                  -- as Count Dooku, but he glides: World at War
+                                                                -- is not to be heard walking for him
 }
 
 -- Two more things the bridge needs to know about the character go in with
@@ -94,6 +97,20 @@ local KIT = {
 local IS_HERO = 32    -- a hero or a villain: always shown from behind
 local IS_MELEE = 64   -- fights with a lightsaber: its abilities are worked by a different button (docs/PHASE3.md)
 local FIRST_MELEE_KIT = 7
+
+-- And a third: who the character is, as a number times WHO_TIMES. Several
+-- characters share a kit, and World at War shows the player's name on its
+-- scoreboard: the character's, which its bridge has by this number ([waw]
+-- character_names in its wawbf.ini; the two lists have to agree).
+local WHO_TIMES = 128
+local WHO = {
+    all_hero_hansolo_tat = 1,  rep_inf_ep3_rifleman = 2,  imp_inf_rifleman    = 3,
+    cis_inf_marine       = 4,  imp_hero_bobafett    = 5,  all_hero_chewbacca  = 6,
+    all_hero_leia        = 7,  all_hero_luke_jedi   = 8,  rep_hero_obiwan     = 9,
+    rep_hero_macewindu   = 10, cis_hero_darthmaul   = 11, rep_hero_aalya      = 12,
+    rep_hero_anakin      = 13, imp_hero_darthvader  = 14, rep_hero_yoda       = 15,
+    cis_hero_countdooku  = 16, cis_hero_grievous    = 17, imp_hero_emperor    = 18,
+}
 
 -- What each character carries that it does not carry in the game as shipped.
 -- World at War has to be able to do whatever this game shows, so:
@@ -103,9 +120,20 @@ local FIRST_MELEE_KIT = 7
 --     matches with its own.
 -- A weapon is named by its place among the class's weapons. "" takes the
 -- weapon away.
+--   - Chewbacca's rocket launcher goes, and nothing takes its place (the
+--     user's decision): he has the bowcaster. His launcher fires a rocket
+--     the player then steers, looking out from it; nothing in World at War
+--     flies that way, and no character is left on the screen while it does.
+--     Three other launchers were tried in its place and each stopped the
+--     game dead the moment he took it in hand, seen from behind: the
+--     Alliance soldier's rocket launcher (carried on the shoulder, which he
+--     has no way of doing), a copy of that told to be held like a rifle, and
+--     the Wookiee soldier's grenade launcher, which is held like a rifle and
+--     is the same shape as his own. (Through his eyes the last was fine: it
+--     is his body that cannot do it.)
 local CARRIES = {
     all_hero_hansolo_tat = { [2] = "", [3] = "all_weap_inf_thermaldetonator", [4] = "" },
-    all_hero_chewbacca   = { [3] = "all_weap_inf_thermaldetonator", [4] = "" },
+    all_hero_chewbacca   = { [2] = "", [3] = "all_weap_inf_thermaldetonator", [4] = "" },
     all_hero_leia        = { [3] = "" },
     imp_hero_bobafett    = { [4] = "imp_weap_inf_thermaldetonator" },
     cis_hero_grievous    = { [2] = "" },
@@ -118,7 +146,7 @@ local CARRIES = {
 local PLENTY = 99
 local COUNTED = {
     all_hero_hansolo_tat = { 3 },
-    all_hero_chewbacca   = { 2, 3 },
+    all_hero_chewbacca   = { 3 },
     all_hero_leia        = { 2 },
     imp_hero_bobafett    = { 2, 3, 4 },
     rep_inf_ep3_rifleman = { 3 },
@@ -140,19 +168,9 @@ local STRAIGHT = {
 local KIT_WEAPONS = {
     "rep_weap_inf_rifle", "rep_weap_inf_pistol", "imp_weap_inf_rifle", "imp_weap_inf_pistol",
     "cis_weap_inf_rifle", "cis_weap_inf_rocket_launcher",
-    "all_weap_hero_hanpistol", "all_weap_inf_bowcaster", "all_weap_hero_rocket_launcher",
+    "all_weap_hero_hanpistol", "all_weap_inf_bowcaster",
     "all_weap_hero_targetpistol", "imp_weap_hero_bobarifle", "imp_weap_hero_flamethrower",
     "imp_weap_inf_wrist_rocket",
-}
-
--- The firing sounds the Clone Wars troopers' weapons are given in a roster
--- that mixes eras, where their own are not there to play (ScriptInit says
--- why): the nearest thing the other era has.
-local BORROWED = {
-    rep_weap_inf_rifle           = "all_weap_inf_rifle_fire",
-    rep_weap_inf_pistol          = "all_weap_inf_pistol_fire",
-    cis_weap_inf_rifle           = "imp_weap_inf_rifle_fire",
-    cis_weap_inf_rocket_launcher = "imp_weap_inf_rocket_launcher_fire",
 }
 
 -- The crosshair in third person. This game's own camera looks down on the
@@ -193,7 +211,8 @@ local function FullHealth()
     if kit >= FIRST_MELEE_KIT then
         says = says + IS_MELEE
     end
-    return FULL_HEALTH * (1 + says / 1024)
+    says = says + WHO_TIMES * ((playing and WHO[playing]) or 0)
+    return FULL_HEALTH * (1 + says / 65536)
 end
 
 -- The shipped game keeps no log, so each step leaves a string in memory that
@@ -353,17 +372,23 @@ function ArenaInit(roster)
     SetMemoryPoolSize ("Combo::Deflect",100)     -- should be ~1x #combo
 
     -- One era's sounds, and only one. Each era's pack for a planet carries
-    -- one bank of recordings, and the game takes in the first bank it is
-    -- given and no other: with both read, in either order and from this
+    -- one bank of recordings, and of two such the game takes in the first
+    -- and not the second: with both read, in either order and from this
     -- planet's file or another's, only the first era's weapons were heard
     -- (measured, each character firing in turn: the clone trooper's rifle at
     -- a fifth of full scale read first and nothing read second, and the
     -- stormtrooper's the other way about). A roster that mixes eras ("both")
     -- gets the Empire's and the Alliance's, which is also the pack with every
-    -- hero's sounds in it, and its Clone Wars troopers borrow (BORROWED).
+    -- hero's sounds in it. Its Clone Wars troopers' weapons are in a small
+    -- bank of the arena's own, read ahead of it (build.ps1 makes it, out of
+    -- the game's own recordings): four firing sounds, under the names those
+    -- weapons ask for.
     if roster.era == "cw" then
         ReadDataFile("sound\\tat.lvl;tat2cw")
     else
+        if roster.era == "both" then
+            ReadDataFile("dc:sound\\waw.lvl;wawcw")
+        end
         ReadDataFile("sound\\tat.lvl;tat2gcw")
     end
     for _, side in ipairs(roster.sides) do
@@ -406,11 +431,6 @@ function ArenaInit(roster)
     for _, weapon in ipairs(KIT_WEAPONS) do
         for _, property in ipairs(STRAIGHT) do
             pcall(SetClassProperty, weapon, property, 0)
-        end
-    end
-    if roster.era == "both" then
-        for weapon, sound in pairs(BORROWED) do
-            pcall(SetClassProperty, weapon, "FireSound", sound)
         end
     end
 
