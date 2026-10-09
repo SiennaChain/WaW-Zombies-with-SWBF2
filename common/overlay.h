@@ -9,8 +9,14 @@
 // alpha channel says where they are: solid things write full alpha, the HUD's
 // blended parts write part, and everything untouched stays at none.
 //
-// So the publishing side (SWBF2) asks the probe for that cut, and at the end
-// of each frame copies its back buffer into shared memory. The drawing side
+// That cut loses whatever belongs to the player but is drawn with the world:
+// their shots, and in third person their character. So the arena was changed
+// to draw nothing but the player, and the probe is asked instead to keep the
+// whole frame and make its black background see-through (docs/PHASE2.md,
+// "Nothing to cut"). Either way the frame's alpha channel is the mask.
+//
+// The publishing side (SWBF2) asks the probe for one or the other, and at the
+// end of each frame copies its back buffer into shared memory. The drawing side
 // (WaW) copies the newest picture into a texture and draws it across the
 // screen at the end of its own frame.
 //

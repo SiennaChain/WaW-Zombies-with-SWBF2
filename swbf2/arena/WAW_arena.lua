@@ -3,8 +3,11 @@
 -- being played. This file is the part every roster shares.
 --
 -- The world is the mod tools' blank template with everything that could
--- interfere taken out. Nobody is in it but the player's unit, nothing can
--- kill that unit, and there is no objective, so the mission never ends.
+-- interfere taken out, the ground and the sky included (build.ps1 does that
+-- part): whatever this game draws is then the player's, and its whole picture
+-- can be laid over World at War's. Nobody is in it but the player's unit,
+-- nothing can kill that unit, and there is no objective, so the mission never
+-- ends.
 -- World at War owns the fight; this game only has to keep a character
 -- standing there.
 --

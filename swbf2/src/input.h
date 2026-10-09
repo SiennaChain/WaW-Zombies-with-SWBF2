@@ -49,6 +49,10 @@ void SetFunctions(const Functions& functions);
 // The WawButtons held down now, or 0 if WaW has gone quiet.
 void SetButtons(uint32_t buttons);
 
+// False while aim must not zoom the game, whoever is holding it: the game is
+// then kept zoomed out. (In third person its zoom hides the character.)
+void SetAimAllowed(bool allowed);
+
 // Whether the game is zoomed in now: 1, 0, or -1 for "cannot tell". Not
 // knowing, aim is pressed once each time WaW's changes, which stays right
 // only as long as nothing else zooms the game.

@@ -3,6 +3,9 @@
 #include <windows.h>
 
 #include <d3d9.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 #include <atomic>
 #include <cctype>
@@ -70,6 +73,8 @@ std::atomic<int> g_state{0};
 std::atomic<int> g_cutNth{0};
 std::atomic<unsigned long> g_cutColour{0};
 int g_depthClears = 0;  // depth-only clears so far this frame; rendering thread only
+std::atomic<bool> g_transparentClears{false};  // SetTransparentClears
+std::atomic<TransformObserver> g_transformObserver{nullptr};
 
 std::mutex g_requestMutex;       // guards the request below until the recording starts
 std::wstring g_directory;
@@ -184,13 +189,80 @@ void Snapshot(IDirect3DDevice9* device, const char* why) {
   target->Release();
 }
 
+// What the next draw call takes its picture from, if that is a picture the
+// game drew earlier rather than one loaded from disk: its size, or "".
+std::string SampledTarget(IDirect3DDevice9* device) {
+  IDirect3DBaseTexture9* base = nullptr;
+  if (FAILED(device->GetTexture(0, &base)) || !base) return "";
+  std::string found;
+  if (base->GetType() == D3DRTYPE_TEXTURE) {
+    D3DSURFACE_DESC desc{};
+    if (SUCCEEDED(static_cast<IDirect3DTexture9*>(base)->GetLevelDesc(0, &desc)) &&
+        (desc.Usage & D3DUSAGE_RENDERTARGET)) {
+      char text[48];
+      std::snprintf(text, sizeof(text), "%ux%u", desc.Width, desc.Height);
+      found = text;
+    }
+  }
+  base->Release();
+  return found;
+}
+
+// How the next draw call is set up, for the ones asked about by number.
+void DescribeDraw(IDirect3DDevice9* device) {
+  DWORD blend = 0, source = 0, destination = 0, depthTest = 0, depthWrite = 0, write = 0xF, fvf = 0;
+  device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+  device->GetRenderState(D3DRS_SRCBLEND, &source);
+  device->GetRenderState(D3DRS_DESTBLEND, &destination);
+  device->GetRenderState(D3DRS_ZENABLE, &depthTest);
+  device->GetRenderState(D3DRS_ZWRITEENABLE, &depthWrite);
+  device->GetRenderState(D3DRS_COLORWRITEENABLE, &write);
+  device->GetFVF(&fvf);
+  IDirect3DVertexShader9* vertexShader = nullptr;
+  IDirect3DPixelShader9* pixelShader = nullptr;
+  device->GetVertexShader(&vertexShader);
+  device->GetPixelShader(&pixelShader);
+  const std::string sampled = SampledTarget(device);
+  Line("    draw call %d: samples %s; blend %lu (%lu onto %lu); depth test %lu, write %lu; writes %s%s; %s vertices, %s pixels, fvf %lX",
+       g_draws, sampled.empty() ? "a loaded texture or none" : ("an earlier picture, " + sampled).c_str(), blend,
+       source, destination, depthTest, depthWrite, (write & 7) ? "colour" : "no colour",
+       (write & D3DCOLORWRITEENABLE_ALPHA) ? " and alpha" : "", vertexShader ? "shader" : "fixed",
+       pixelShader ? "shader" : "fixed", fvf);
+  if (vertexShader) vertexShader->Release();
+  if (pixelShader) pixelShader->Release();
+}
+
 void BeforeDraw(IDirect3DDevice9* device) {
   if (g_recWanted.count(g_draws)) {
     FlushDraws();
     Snapshot(device, "asked");
+    DescribeDraw(device);
   }
   ++g_draws;
 }
+
+// Whole-frame mode: a draw call in the world's part of the frame that takes
+// its picture from one the game drew earlier is the game laying a finished
+// layer over the screen (its far scene, a glow). In an empty world those
+// layers are empty, but they are laid down solid, and would make the whole
+// picture solid with them. They keep their colour and lose their say over
+// what is see-through.
+struct KeepAlpha {
+  IDirect3DDevice9* device = nullptr;
+  DWORD before = 0xF;
+  explicit KeepAlpha(IDirect3DDevice9* d) {
+    if (!g_transparentClears.load(std::memory_order_relaxed) || g_depthClears != 1 || SampledTarget(d).empty()) {
+      return;
+    }
+    if (FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE, &before))) before = 0xF;
+    if (!(before & D3DCOLORWRITEENABLE_ALPHA)) return;
+    device = d;
+    d->SetRenderState(D3DRS_COLORWRITEENABLE, before & ~static_cast<DWORD>(D3DCOLORWRITEENABLE_ALPHA));
+  }
+  ~KeepAlpha() {
+    if (device) device->SetRenderState(D3DRS_COLORWRITEENABLE, before);
+  }
+};
 
 HRESULT WINAPI StretchRectHook(IDirect3DDevice9* self, IDirect3DSurface9* source, const RECT* sourceRect,
                                IDirect3DSurface9* destination, const RECT* destinationRect,
@@ -230,16 +302,21 @@ HRESULT WINAPI ClearHook(IDirect3DDevice9* self, DWORD count, const D3DRECT* rec
                          D3DCOLOR color, float z, DWORD stencil) {
   const bool depthOnly = (flags & D3DCLEAR_ZBUFFER) && !(flags & D3DCLEAR_TARGET);
   const int cut = g_cutNth.load(std::memory_order_relaxed);
-  const bool cutHere = depthOnly && cut > 0 && ++g_depthClears == cut;
+  if (depthOnly) ++g_depthClears;
+  const bool cutHere = depthOnly && cut > 0 && g_depthClears == cut;
+  const bool transparent = (flags & D3DCLEAR_TARGET) && color != 0 &&
+                           g_transparentClears.load(std::memory_order_relaxed);
   if (Recording()) {
     FlushDraws();
     // A depth-only clear part-way through a frame is the classic sign of a
     // first-person weapon about to be drawn over the world: keep the picture.
     if (depthOnly && g_draws > 0) Snapshot(self, "depthclear");
-    Line("Clear%s%s%s%s colour %08lX z %.3f%s", (flags & D3DCLEAR_TARGET) ? " target" : "",
+    Line("Clear%s%s%s%s colour %08lX z %.3f%s%s", (flags & D3DCLEAR_TARGET) ? " target" : "",
          (flags & D3DCLEAR_ZBUFFER) ? " depth" : "", (flags & D3DCLEAR_STENCIL) ? " stencil" : "",
-         count ? " (part of the target)" : "", color, z, cutHere ? "  <- the picture is cut here" : "");
+         count ? " (part of the target)" : "", color, z, cutHere ? "  <- the picture is cut here" : "",
+         transparent ? "  <- made transparent instead" : "");
   }
+  if (transparent) color = 0;
   if (cutHere) {
     return g_clear(self, 0, nullptr, flags | D3DCLEAR_TARGET, g_cutColour.load(std::memory_order_relaxed), z,
                    stencil);
@@ -248,6 +325,13 @@ HRESULT WINAPI ClearHook(IDirect3DDevice9* self, DWORD count, const D3DRECT* rec
 }
 
 HRESULT WINAPI SetTransformHook(IDirect3DDevice9* self, D3DTRANSFORMSTATETYPE state, const D3DMATRIX* m) {
+  if (const TransformObserver observer = g_transformObserver.load(std::memory_order_relaxed)) {
+#ifdef _MSC_VER
+    observer(static_cast<unsigned>(state), _ReturnAddress());
+#else
+    observer(static_cast<unsigned>(state), __builtin_return_address(0));
+#endif
+  }
   if (Recording() && state == D3DTS_PROJECTION && m) {
     FlushDraws();
     Line("SetTransform projection: x scale %.4f, y scale %.4f, m33 %.5f, m43 %.4f, m34 %.1f", m->_11,
@@ -267,18 +351,21 @@ HRESULT WINAPI SetViewportHook(IDirect3DDevice9* self, const D3DVIEWPORT9* viewp
 
 HRESULT WINAPI DrawPrimitiveHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT start, UINT count) {
   if (Recording()) BeforeDraw(self);
+  const KeepAlpha keep(self);
   return g_drawPrimitive(self, type, start, count);
 }
 
 HRESULT WINAPI DrawIndexedHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, INT baseVertex,
                                UINT minIndex, UINT vertices, UINT start, UINT count) {
   if (Recording()) BeforeDraw(self);
+  const KeepAlpha keep(self);
   return g_drawIndexed(self, type, baseVertex, minIndex, vertices, start, count);
 }
 
 HRESULT WINAPI DrawUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT count, const void* data,
                           UINT stride) {
   if (Recording()) BeforeDraw(self);
+  const KeepAlpha keep(self);
   return g_drawUp(self, type, count, data, stride);
 }
 
@@ -286,6 +373,7 @@ HRESULT WINAPI DrawIndexedUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, 
                                  UINT vertices, UINT count, const void* indices, D3DFORMAT format,
                                  const void* data, UINT stride) {
   if (Recording()) BeforeDraw(self);
+  const KeepAlpha keep(self);
   return g_drawIndexedUp(self, type, minIndex, vertices, count, indices, format, data, stride);
 }
 
@@ -336,6 +424,15 @@ void SetCut(int nth, unsigned long colour) {
     }
   }
 }
+
+void SetTransparentClears(bool on) {
+  if (g_transparentClears.exchange(on) != on) {
+    log::Info(on ? "frame probe: every clear of a picture is to transparent black"
+                 : "frame probe: clears are left as the game makes them");
+  }
+}
+
+void SetTransformObserver(TransformObserver observer) { g_transformObserver.store(observer); }
 
 void OnPresent(IDirect3DDevice9* device) {
   g_depthClears = 0;

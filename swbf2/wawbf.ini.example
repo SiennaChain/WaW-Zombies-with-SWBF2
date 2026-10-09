@@ -87,6 +87,15 @@ view_projection = BattlefrontII.exe+0x3DE368
 ; view_toggle_key is a Windows virtual-key code: 0x78 = F9.
 view_toggle = BattlefrontII.exe+0x1AF9106 = u8 0 1
 view_toggle_key = 0x78
+; The view is third person while this address holds this value. WaW is told,
+; so that it draws from behind the player as well and leaves its own soldier
+; out. Same address as view_toggle. Format: <address> = <u8|u32|f32> <value>
+third_person = BattlefrontII.exe+0x1AF9106 = u8 0
+; 1 = in third person, draw from exactly where WaW's camera is, so that the
+; character stands where WaW's player does. Without it this game's own
+; camera is used, which sits somewhere else and knows nothing of WaW's walls.
+; See docs/PHASE2.md.
+follow_camera = 0
 ; Changing character without the spawn screen, whichever window has the
 ; keyboard. The arena's mission script does the changing; the bridge asks it
 ; by writing a number where the script looks, which is the unit's health (the
@@ -146,14 +155,29 @@ frame_dump =
 ; picture too, to this colour (alpha, red, green, blue). 0 = off.
 frame_cut = 0
 frame_cut_colour = 0x00000000
+; For experiments only: 1 = do what [overlay] cut = 0 does to the frame (see
+; below) without sending the picture anywhere.
+transparent_clears = 0
+; 1 = log where in the game each kind of Direct3D transform is set from, the
+; first time each place is seen. Needs frame_probe or [overlay] publish.
+transform_callers = 0
 
 [overlay]
-; 1 = send this game's first-person weapon and HUD to WaW every frame. The
-; frame is cut at the depth-only clear that comes before the weapon (cut = 2:
-; the second one), so the game's own window then shows the weapon and HUD on
-; black. See docs/PHASE2.md.
+; 1 = send this game's picture to WaW every frame, to be drawn over WaW's.
+; What is in the picture depends on cut:
+;
+; cut = 0  The whole frame, with its black background made see-through. For
+;          the arena swbf2/arena builds, which draws nothing but the player:
+;          their character in third person, their weapon in first, their
+;          shots, and the HUD.
+; cut = 2  Only what is drawn after the frame's second depth-only clear: the
+;          first-person weapon and the HUD. For a world with a ground and a
+;          sky (the arena built with -Ground, or any stock map). No third
+;          person, and no shots: those are part of the world.
+;
+; See docs/PHASE2.md.
 publish = 0
-cut = 2
+cut = 0
 
 [proxy]
 chain =

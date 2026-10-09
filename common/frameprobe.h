@@ -42,4 +42,28 @@ void Request(const std::wstring& directory, const std::string& value);
 // weapon and the HUD. 0 turns it off.
 void SetCut(int nth, unsigned long colour);
 
+// The other way to end up with only the player's side of a frame: a world
+// with nothing in it. Then nothing has to be cut away, but two things would
+// still make the picture solid from edge to edge, and with this on neither
+// does:
+//
+// - The game starts each picture as solid black. Every clear of a picture
+//   is to transparent black instead.
+// - Part-way through, Battlefront II lays its far scene (a picture it drew
+//   earlier in the frame) in behind what is already there, solid. A draw
+//   call in the world's part of the frame that takes its picture from an
+//   earlier one keeps its colour but no longer writes alpha.
+//
+// What the frame did not draw on then stays see-through.
+void SetTransparentClears(bool on);
+
+// Told of every SetTransform the game makes, on its rendering thread, before
+// the call goes through: which transform (D3DTS_VIEW is 2, D3DTS_WORLD 256),
+// and where in the game the call came from. A game sets these at fixed points
+// in its drawing, so "this transform, from that address" names a moment in
+// the frame; Battlefront II's camera is readied at one. One observer at a
+// time; null for none. It must be quick.
+using TransformObserver = void (*)(unsigned state, void* caller);
+void SetTransformObserver(TransformObserver observer);
+
 }  // namespace wawbf::frameprobe

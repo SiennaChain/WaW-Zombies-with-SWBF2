@@ -15,6 +15,8 @@ two cameras agree, SWBF2 sits in an empty arena).
 - [x] Fire sent to SWBF2, whatever it is bound to in either game (checked with a controller)
 - [x] Aim and reload sent the same way
 - [x] A weapon that does not run out of ammunition in an arena with none to pick up
+- [x] An arena that draws nothing but the player, and the whole frame laid over WaW: shots show, and so does the character in third person
+- [x] WaW's camera behind the player too, its own soldier left out, and SWBF2 drawing from the same place: third person lines up
 - [ ] The other buttons (secondary fire, weapon switching, abilities)
 - [ ] One HUD, not two
 - [ ] SWBF2 hidden while this runs (`hidden = 1` exists; not yet tried together)
@@ -69,7 +71,58 @@ Two things follow from where the alpha comes from:
 
 The cut is by position ("the second depth-only clear"), which is right for
 first person and the spawn screen. In third person the character is part of
-the world and is cut away with it: see "Third person", below.
+the world and is cut away with it, and so in either view is every shot the
+weapon fires. That is why the cut is no longer what is used: see "Nothing to
+cut", next. It remains as `[overlay] cut = 2`, for a world with a ground.
+
+## Nothing to cut
+
+The arena is ours, so instead of cutting the player's side out of the frame
+the arena was changed to draw nothing else. `swbf2/arena/build.ps1`:
+
+- **No ground.** Every world the tools know has a terrain, so it is kept,
+  but its "active" square (four 16-bit cell numbers at byte 8 of the `.TER`:
+  the part that is compiled, drawn and stood on) is moved to eight cells in
+  a far corner.
+- **An invisible floor.** The player stands on 25 of the game's own
+  invisible collision blocks (`com_inv_col_64`, a 64 m cube with its corner
+  at the object's position), tops at height 0, around where the player
+  appears. The soldier stands and runs on them as on ground. They stop
+  320 m across; past that there is nothing to stand on.
+- **No sky.** The sky file loses its dome, and its fog is pushed out.
+- **No command posts in sight.** They glow, so they are moved to the far
+  corner. The mission script spawns the player from a path, not a post.
+
+The frame went from 209 draw calls to about 90, and the game's own window
+shows the character and the HUD on black.
+
+Black is not see-through, though, and with `[overlay] cut = 0` the bridge
+makes it so (`frameprobe::SetTransparentClears`). Two things in the frame
+painted the whole picture solid:
+
+- **The clears.** The game clears each picture to solid black. They are made
+  clears to transparent black.
+- **The far scene.** In the world's part of the frame the game lays its far
+  scene, a full-size picture drawn earlier in the frame, in *behind*
+  whatever is already there (a blend on the alpha already in the picture:
+  source times one-minus-destination-alpha). The far scene is empty now, but
+  it is laid down solid. It is recognised as a draw call, between the first
+  and second depth-only clears, whose texture is a render target; such a
+  call keeps its colour and is stopped from writing alpha. Found by saving
+  the picture before each draw call of a frame and seeing which one took it
+  from 2% solid to 100%.
+
+What comes out is 90% see-through in either view, with the weapon or the
+character, and the HUD, solid.
+
+What this bought, seen in WaW's picture:
+
+- **Shots.** The bolts leave the gun and fly off into WaW's world.
+- **Third person.** The character, from behind, running in WaW's map.
+
+SWBF2's picture is still laid on top of everything in WaW's: a bolt is not
+stopped by a WaW wall, and a zombie between the camera and the character
+appears behind the character.
 
 ## Getting the picture across
 
@@ -306,9 +359,9 @@ from its icon to a character in the world with nobody touching it.
 
 ## Third person
 
-Looked at, not built. `[swbf2] view_toggle` (F9) already switches SWBF2's
-view, and the character runs, turns and aims as the WaW player does. A frame
-recorded there (209 draw calls):
+`[swbf2] view_toggle` (F9) switches SWBF2's view, and the character runs,
+turns and aims as the WaW player does. A frame recorded there while the arena
+still had a ground (209 draw calls):
 
 | Draw calls | What |
 |---|---|
@@ -319,44 +372,145 @@ recorded there (209 draw calls):
 | 175 to 208 | the HUD, after the second depth-only clear |
 
 There is no weapon pass, and the character is not set apart from the ground
-it stands on, so there is no clear to cut at. Two ways to get it out:
+it stands on, so there is no clear to cut at. That is what "Nothing to cut",
+above, was built for, and with it the character arrives in WaW's picture.
 
-- **Draw nothing else.** The arena is ours. With no terrain and no sky, and
-  the player standing on the game's own invisible collision blocks
-  (`com_inv_col_64`, listed in its `ingame.lvl`), the character is all there
-  is, and the
-  picture only needs clearing to transparent at the start. Anything the
-  character does would then come across too: bolts, explosions, a thrown
-  lightsaber, in first person as well, where the bolts are missing now.
-- **Skip everything else**, by telling the character's draw calls from the
-  ground's. Needs no new arena but has to recognise a character by how it is
-  drawn.
+On its own that puts the character in the wrong place. WaW is still drawing
+from the player's eyes, so the character stands a few metres in front of the
+camera rather than where the player is. Three more things make it right, and
+they happen together when SWBF2's view goes to third person (F9) and are
+undone together when it leaves.
 
-The first is the one to try. Either way three things remain: WaW has to draw
-from behind the player too (`cg_thirdPerson`), without its own soldier in the
-picture; the two cameras have to sit in the same place, and WaW's moves in
-when a wall is behind the player where SWBF2's has no wall to meet; and
-SWBF2's picture always lands on top of WaW's, zombies in front of the player
-included.
+### WaW draws from behind the player
+
+SWBF2's bridge says when its view is third person (`kBfThirdPerson`, read
+from the same setting F9 flips: `[swbf2] third_person`). While it says so and
+its picture is arriving, WaW's bridge sets WaW's own `cg_thirdPerson` to 1
+(`[waw] third_person`). The setting was found the way `cg_drawGun` was: from
+its name to the code that registers it to the pointer the game keeps to it.
+
+| Setting | Pointer to it | Kind |
+|---|---|---|
+| `cg_thirdPerson` | `CoDWaW.exe+0x2F9CC14` | whole number |
+| `cg_thirdPersonRange` | `+0x3288A30` | float, 120 |
+| `cg_thirdPersonAngle` | `+0x328EBB0` | float, 0 |
+
+The value is `0x10` into each. Only the first is written; how far back the
+camera sits is left as the player has it.
+
+### WaW leaves its own soldier out
+
+That camera shows the player's own soldier, exactly where SWBF2's character
+is about to be drawn. The game's scripts can hide an entity (`hide()`), and
+what that does was read from the function the script method is listed with:
+
+    eax = 0x176C6F0 + entity number * 0x378     ; the entity
+    [eax + 8]    |= 0x20                        ; its flags
+    eax = [eax + 0x180]                         ; its client record, if it has one
+    [eax + 0xCC] |= 0x20                        ; the player's flags
+
+`show()` clears the same bit. The player is entity 0 and its client record is
+the one the player's position is already read from, so the bridge sets the
+bit in those two places (`[waw] hide_body`) and clears it again afterwards.
+
+### SWBF2 draws from where WaW's camera is
+
+WaW's camera cannot be told where to go: it backs off behind the player
+until a wall is in the way, and only WaW knows its walls. So WaW's is the
+camera and SWBF2 is given it.
+
+WaW's end is three floats and nine, just after the field of view that was
+already being read: where the picture is drawn from (`CoDWaW.exe+0x3120354`)
+and the directions it counts as forward, left and up (`+0x3120364`). They go
+out with every sample (`cameraOrigin`, `cameraForward`, `cameraUp`).
+
+SWBF2 keeps a camera as an object. Its renderer has one routine for readying
+a camera to draw with (it starts at about `BattlefrontII.exe+0x2B76E0`), which
+takes the camera from a pointer at `+0x3F58E0` and reads from it:
+
+| At | What |
+|---|---|
+| `0x30` | which way is right, up and back: three rows of four floats |
+| `0x60` | where it is |
+| `0x70` | the same placement inverted, four rows: what drawing uses |
+| `0xB0` | its lens |
+
+The routine runs for each part of the frame. Just before it reads the camera
+it makes a call, to set the world transform; that call
+(`+0x2B77A0`) is sent through `OnCameraSetup` first (`swbf2/src/callhook.cpp`,
+the same way the controller update is hooked), which writes both placements.
+The game has put its own camera there by then and nothing has been drawn
+with it yet.
+
+What is written is WaW's camera *relative to WaW's player*, turned into
+SWBF2's directions and metres and added to where the unit stands: the unit
+is on SWBF2's floor at SWBF2's height, whatever staircase the WaW player is
+on. Only the player's camera is touched (the HUD has one of its own, at the
+origin), only in third person, and only once WaW's camera has actually moved
+out of the player's head.
+
+The first attempt keyed on the transform call itself, seen through the frame
+probe's hook on the device. It never matched: the game sets every transform
+from one wrapper, not from the routines that want them set, which
+`[debug] transform_callers` shows.
+
+### Aiming in third person
+
+SWBF2's zoom is no use here. In third person it takes the character out of
+the picture for a view down the sights (a screenshot taken while the player
+happened to be aiming had nobody in it), and its zoomed lens is not WaW's
+anyway. So in third person:
+
+- **SWBF2 is kept zoomed out.** Aim is not passed on as a press of zoom
+  (`input::SetAimAllowed`), whoever is holding it.
+- **SWBF2 is given WaW's lens.** The camera object keeps the tangents of half
+  its view, across and top to bottom, at `0x138` and `0x13C`, and at `0x140`
+  a zoom they are divided by; the routine that readies the camera builds its
+  projection from those. WaW's two tangents are written there (times the
+  zoom, which is left alone) in the same hook that places the camera. When
+  WaW narrows its view to aim, SWBF2's narrows with it and the character
+  stays the size WaW's view of the room makes it.
+
+Whether SWBF2 is zoomed is told from that zoom factor in third person, not
+from the field of view, which is now WaW's.
+
+### Checked
+
+`tools/probe/camerafit.ps1` does this. Projecting the player's feet, and a
+point 1.5 m above them, through each game's camera as read from memory,
+eight times over three seconds while the player moved:
+
+    WaW ( 0.002, -1.174) ( 0.002, -0.102)   SWBF2 ( 0.002, -1.175) ( 0.002, -0.101)
+    WaW (-0.009, -1.158) (-0.009, -0.101)   SWBF2 (-0.009, -1.158) (-0.009, -0.100)
+
+(across, up; as fractions of half the screen), with both cameras 3.34 m from
+the feet. The two agree to a thousandth of the screen. With the player
+aiming in WaW the lens read 0.770 x 0.433 in both and the feet still agreed;
+while the player turns quickly SWBF2 is a frame behind, a few thousandths.
+
+With WaW's distance of 120 the camera is at head height straight behind the
+player, and looking level the feet are just off the bottom of the screen.
+`cg_thirdPersonRange 180` or so in WaW's console shows the whole character;
+SWBF2 follows whatever it is set to.
 
 ## Not done yet
 
 - **What a shot does.** SWBF2's weapon fires, and WaW's own hidden gun fires
-  with it. The bolt is part of SWBF2's world, which is cut away, so only the
-  flash and the recoil reach WaW's picture; and it is still WaW's bullet that
-  hurts the zombie. Deciding which game owns the damage is Phase 3.
+  with it. The bolt is seen, but it is WaW's bullet that hurts the zombie.
+  Deciding which game owns the damage is Phase 3.
 - **The other buttons.** Grenades, weapon switching and whatever a hero's
   abilities are on. The WaW records for them are in the table above; the
   SWBF2 function numbers have to be found, and the protocol carries only
   three buttons so far.
-- **Zoomed pictures do not line up.** WaW narrows its view when aiming by its
-  own amount and SWBF2 by its own; nothing matches them. It does not show
-  while SWBF2's world is cut away.
+- **In first person, zoomed pictures do not line up.** WaW narrows its view
+  when aiming by its own amount and SWBF2 by its own. Only SWBF2's scope is
+  drawn there, so it does not show. (Third person is given WaW's lens.)
 - **Two HUDs.** Both games' are on screen. Which parts of each survive is a
   design choice: SWBF2's crosshair and ammo belong to its weapon; WaW's
   points and round count belong to its game; SWBF2's minimap and health show
   an empty arena and a unit that cannot be hurt.
-- **Third person**, as above: looked at, not built.
+- **Third person is always on top.** The character is drawn over everything
+  in WaW's picture, a zombie standing between it and the camera included.
 - **Different window sizes.** The picture is stretched to WaW's size if they
   differ, which has not been tried.
 - **How late the weapon is.** Probably a frame or two; not measured, and not

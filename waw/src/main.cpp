@@ -43,6 +43,11 @@ struct Settings {
   std::vector<AddressSpec> heldFire, heldAim, heldReload;
   AddressSpec drawGun;  // the byte behind cg_drawGun
   bool haveDrawGun = false;
+  AddressSpec viewOrigin, viewAxis;  // where the game is drawing from: 3 floats, and 9 (forward, left, up)
+  bool haveView = false;
+  AddressSpec thirdPerson;           // the number behind cg_thirdPerson
+  bool haveThirdPerson = false;
+  std::vector<AddressSpec> hideBody; // the flags in which bit kHidden keeps the player's own soldier from being drawn
   int tickMs = 16;
 };
 
@@ -76,6 +81,10 @@ Settings LoadSettings(const Config& config) {
   s.heldAim = LoadPlaces(config, "held_aim");
   s.heldReload = LoadPlaces(config, "held_reload");
   s.haveDrawGun = config.GetAddress("waw", "draw_gun", s.drawGun);
+  s.haveView = config.GetAddress("waw", "view_origin", s.viewOrigin) &&
+               config.GetAddress("waw", "view_axis", s.viewAxis);
+  s.haveThirdPerson = config.GetAddress("waw", "third_person", s.thirdPerson);
+  s.hideBody = LoadPlaces(config, "hide_body");
   const auto source = [](const std::vector<AddressSpec>& places, const char* fallback) {
     return places.empty() ? fallback : "the game's own record";
   };
@@ -158,6 +167,44 @@ void HideGun() {
   hiding = hide;
 }
 
+// Third person. When SWBF2 shows the player's character from behind, this
+// game has to draw from behind the player too, or the character is drawn
+// standing in front of a camera that is still in the player's eyes. Two
+// things are switched together, and switched back together:
+//
+// - cg_thirdPerson, the game's own camera behind the player. Where exactly it
+//   ends up (it comes in when a wall is behind the player) is published like
+//   everything else, and SWBF2 draws from the same place.
+// - The player's own soldier, which that camera would otherwise show, where
+//   SWBF2's character is about to be drawn. The game's script function
+//   hide() does it by setting one bit in the entity's flags and in the
+//   player's, and nothing clears it but show(); the same bit is set here.
+//
+// Only while SWBF2's picture is really arriving: a player left looking at the
+// back of nobody would be worse than either view. Call with g_mutex held.
+const uint32_t kHidden = 0x20;
+
+void ThirdPerson() {
+  static bool on = false;
+  BfPlayerState bf{};
+  const bool want = g_block && overlay::Drawing() && g_block->bf.read(bf) && (bf.flags & kBfThirdPerson) != 0;
+  if (!g_settings.haveThirdPerson || (!want && !on)) return;
+  const uintptr_t setting = mem::Resolve(g_settings.thirdPerson);
+  if (!setting) return;  // the game has not made the setting yet
+  const int32_t wanted = want ? 1 : 0;
+  int32_t now = wanted;
+  if (mem::Read(setting, &now, sizeof(now)) && now != wanted) mem::Write(setting, &wanted, sizeof(wanted));
+  for (const AddressSpec& place : g_settings.hideBody) {
+    const uintptr_t address = mem::Resolve(place);
+    uint32_t flags = 0;
+    if (!address || !mem::Read(address, &flags, sizeof(flags))) continue;
+    const uint32_t changed = want ? (flags | kHidden) : (flags & ~kHidden);
+    if (changed != flags) mem::Write(address, &changed, sizeof(changed));
+  }
+  if (want != on) log::Info(want ? "third person: drawing from behind the player, without WaW's own soldier" : "third person: off");
+  on = want;
+}
+
 // Reads the player and publishes it if it has changed. Call with g_mutex held.
 //
 // This can run more than once per frame the game draws. Publishing the same
@@ -186,10 +233,22 @@ void Publish() {
     next.flags |= kWawFovValid;
   }
   next.buttons = s.forwardButtons ? HeldButtons(s) : 0;
+  // The camera: where the picture was last drawn from. The axis is three
+  // directions of length one, forward, left and up; if the forward one is not
+  // of length one the address is wrong.
+  float axis[9];
+  if (s.haveView && mem::ReadFloat3(mem::Resolve(s.viewOrigin), next.cameraOrigin) &&
+      mem::Read(mem::Resolve(s.viewAxis), axis, sizeof(axis)) &&
+      std::fabs(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2] - 1.0f) < 0.01f) {
+    std::memcpy(next.cameraForward, axis, sizeof(next.cameraForward));
+    std::memcpy(next.cameraUp, axis + 6, sizeof(next.cameraUp));
+    next.flags |= kWawCameraValid;
+  }
   const bool same = next.flags == g_state.flags && next.buttons == g_state.buttons &&
                     std::memcmp(next.origin, g_state.origin, sizeof(next.origin)) == 0 &&
                     std::memcmp(next.viewAngles, g_state.viewAngles, sizeof(next.viewAngles)) == 0 &&
-                    std::memcmp(next.tanHalfFov, g_state.tanHalfFov, sizeof(next.tanHalfFov)) == 0;
+                    std::memcmp(next.tanHalfFov, g_state.tanHalfFov, sizeof(next.tanHalfFov)) == 0 &&
+                    std::memcmp(next.cameraOrigin, g_state.cameraOrigin, sizeof(next.cameraOrigin)) == 0;
   if (same && g_state.frame != 0 && ElapsedUs(g_state.timeUs, next.timeUs) < 50000) return;
   ++next.frame;
   g_state = next;
@@ -206,6 +265,7 @@ void BridgeFrame() {
   std::lock_guard<std::mutex> lock(g_mutex);
   Publish();
   HideGun();
+  ThirdPerson();
 }
 
 void BridgeMain(HMODULE self) {

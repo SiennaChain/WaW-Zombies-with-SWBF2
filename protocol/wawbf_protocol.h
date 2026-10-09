@@ -23,7 +23,7 @@ namespace wawbf {
 
 constexpr uint32_t kMagic = 0x46425757;  // "WWBF" in memory
 constexpr uint32_t kMagicInitializing = 1;
-constexpr uint32_t kVersion = 4;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons
+constexpr uint32_t kVersion = 5;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons; 5: camera
 constexpr const wchar_t* kMappingName = L"Local\\WaWBF_v1";
 constexpr uint32_t kMappingSize = 0x10000;  // 64 KiB; later phases add rings
 constexpr uint32_t kHeartbeatTimeoutMs = 2000;
@@ -102,6 +102,7 @@ enum WawFlags : uint32_t {
   kWawOriginValid = 1u << 0,
   kWawAnglesValid = 1u << 1,
   kWawFovValid = 1u << 2,
+  kWawCameraValid = 1u << 3,
 };
 
 // What the player is holding down in WaW that belongs to SWBF2's side of the
@@ -130,6 +131,14 @@ struct WawPlayerState {
   // over WaW's if both are drawn with the same one.
   float tanHalfFov[2];
   uint32_t buttons;  // WawButtons held down now
+  // Where WaW is drawing from: its camera's position, and the directions it
+  // looks along and counts as up, in WaW space. In first person that is the
+  // player's eyes. In third person it is behind them, wherever WaW has put
+  // it after allowing for the walls, and SWBF2 has to draw from exactly
+  // there for its character to stand where WaW's player is.
+  float cameraOrigin[3];
+  float cameraForward[3];
+  float cameraUp[3];
 };
 
 // The full angle, in degrees, that a tangent of half of it stands for.
@@ -141,6 +150,9 @@ inline int32_t ElapsedUs(uint32_t from, uint32_t to) { return static_cast<int32_
 enum BfFlags : uint32_t {
   kBfPositionValid = 1u << 0,
   kBfFollowing = 1u << 1,  // bridge is driving the BF unit from WaW state
+  // SWBF2 is showing the player's character from behind, so WaW should draw
+  // from behind the player too, and leave its own soldier out.
+  kBfThirdPerson = 1u << 2,
 };
 
 // Game B -> game A. Phase 0 only reports where the BF unit is, so the two
@@ -160,10 +172,10 @@ struct SharedBlock {
 
 static_assert(std::is_standard_layout<SharedBlock>::value, "layout must be fixed");
 static_assert(sizeof(PeerInfo) == 12, "PeerInfo layout changed: bump kVersion");
-static_assert(sizeof(WawPlayerState) == 48, "WawPlayerState changed: bump kVersion");
+static_assert(sizeof(WawPlayerState) == 84, "WawPlayerState changed: bump kVersion");
 static_assert(sizeof(BfPlayerState) == 32, "BfPlayerState changed: bump kVersion");
 static_assert(offsetof(SharedBlock, waw) == 0x40, "layout changed: bump kVersion");
-static_assert(offsetof(SharedBlock, bf) == 0x80, "layout changed: bump kVersion");
+static_assert(offsetof(SharedBlock, bf) == 0xC0, "layout changed: bump kVersion");
 static_assert(sizeof(SharedBlock) <= kMappingSize, "mapping too small");
 
 // ---------------------------------------------------------------------------
@@ -250,6 +262,12 @@ inline float WawPitchToBf(float pitchDeg, const CoordMapping& m) {
   while (pitchDeg > 180.0f) pitchDeg -= 360.0f;
   while (pitchDeg < -180.0f) pitchDeg += 360.0f;
   return pitchDeg * m.pitchSign;
+}
+
+// A direction in WaW space as the same direction in SWBF2 space. Its length
+// is kept, so a WaW distance times `scale` is a SWBF2 one.
+inline Vec3 WawDirectionToBf(const Vec3& w, const CoordMapping& m) {
+  return {w.x, w.z, w.y * m.zSign};
 }
 
 // A WaW velocity (units per second) as a SWBF2 one (metres per second).

@@ -39,6 +39,23 @@ held_reload = CoDWaW.exe+0x2C0FED4, CoDWaW.exe+0x2C0FEE8
 ; stops. Left empty, the gun has to be hidden by hand: cg_drawGun 0 in the
 ; console.
 draw_gun = CoDWaW.exe+0x3066528 > 0x10
+; Where this game is drawing from: the camera's position (3 floats) and its
+; axis (9: the directions it counts as forward, left and up). They sit just
+; after view_fov. Sent to SWBF2, which in third person draws from the same
+; place. In first person it is the player's eyes.
+view_origin = CoDWaW.exe+0x3120354
+view_axis = CoDWaW.exe+0x3120364
+; Third person. While SWBF2 says it is showing the player's character from
+; behind (and its picture is arriving), the bridge sets this game's
+; cg_thirdPerson to 1 (third_person is the number behind that setting) and
+; keeps the player's own soldier from being drawn, by setting in each of the
+; hide_body places the bit the game's own hide() sets: the player entity's
+; flags, and the flags in its client record. Both are undone when SWBF2 goes
+; back to first person or goes away. docs/PHASE2.md says how they were found.
+; How far behind the player the camera sits is this game's own
+; cg_thirdPersonRange (120), which can be changed in its console.
+third_person = CoDWaW.exe+0x2F9CC14 > 0x10
+hide_body = CoDWaW.exe+0x136C6F8, CoDWaW.exe+0x136C870 > 0xCC
 
 [overlay]
 ; 1 = draw SWBF2's first-person weapon and HUD over this game's picture.

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 
+#include "callhook.h"
 #include "log.h"
 #include "memory.h"
 #include "wawbf_protocol.h"
@@ -45,6 +46,7 @@ std::atomic<uint32_t> g_forced{0};           // [debug] force_buttons
 std::atomic<uint32_t> g_forcedFunctions{0};  // [debug] force_functions
 std::atomic<int> g_fire{0}, g_aim{-1}, g_reload{-1};
 std::atomic<int> g_zoomed{-1};
+std::atomic<bool> g_aimAllowed{true};
 BYTE* g_player = nullptr;
 bool g_installed = false, g_failed = false;
 
@@ -100,7 +102,7 @@ void __cdecl OnControllerUpdate(BYTE* controller) {
   const uint32_t buttons = g_buttons.load(std::memory_order_relaxed) | g_forced.load(std::memory_order_relaxed);
   const uint32_t wanted = enabled ? Wanted(buttons) : 0;
   uint32_t on = (wanted & kHeldFunctions) | (wanted & ~before & ~kHeldFunctions);
-  if (enabled) on |= AimPress((buttons & kWawButtonAim) != 0);
+  if (enabled) on |= AimPress((buttons & kWawButtonAim) != 0 && g_aimAllowed.load(std::memory_order_relaxed));
   before = wanted;
   if (!on || !controller[kControllerInUse]) return;
   BYTE* state = *reinterpret_cast<BYTE**>(controller + kControllerState);
@@ -109,74 +111,20 @@ void __cdecl OnControllerUpdate(BYTE* controller) {
   ++g_turnedOn;
 }
 
-// The game was built with its own ideas about which registers a call may
-// change, so nothing can be assumed about what the caller still needs: this
-// puts every register back, the floating point ones included, before going
-// on to the function the game meant to call. The controller is in esi.
-BYTE* MakeThunk(void* handler, const BYTE* original) {
-  const BYTE code[] = {
-      0x60,                                // pushad
-      0x9C,                                // pushfd
-      0x8B, 0xEC,                          // mov ebp, esp
-      0x83, 0xE4, 0xF0,                    // and esp, -16
-      0x81, 0xEC, 0x00, 0x02, 0x00, 0x00,  // sub esp, 512
-      0x0F, 0xAE, 0x04, 0x24,              // fxsave [esp]
-      0x56,                                // push esi
-      0xB8, 0, 0, 0, 0,                    // mov eax, handler
-      0xFF, 0xD0,                          // call eax
-      0x83, 0xC4, 0x04,                    // add esp, 4
-      0x0F, 0xAE, 0x0C, 0x24,              // fxrstor [esp]
-      0x8B, 0xE5,                          // mov esp, ebp
-      0x9D,                                // popfd
-      0x61,                                // popad
-      0xE9, 0, 0, 0, 0,                    // jmp original
-  };
-  const size_t kHandlerAt = 19, kJumpAt = sizeof(code) - 5;
-  auto* thunk = static_cast<BYTE*>(VirtualAlloc(nullptr, sizeof(code), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-  if (!thunk) return nullptr;
-  std::memcpy(thunk, code, sizeof(code));
-  std::memcpy(thunk + kHandlerAt, &handler, sizeof(handler));
-  const int32_t jump = static_cast<int32_t>(original - (thunk + kJumpAt + 5));
-  std::memcpy(thunk + kJumpAt + 1, &jump, sizeof(jump));
-  DWORD old = 0;
-  VirtualProtect(thunk, sizeof(code), PAGE_EXECUTE_READ, &old);
-  FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
-  return thunk;
-}
-
 bool Install() {
   auto* base = reinterpret_cast<BYTE*>(GetModuleHandleW(nullptr));
-  BYTE* call = base + kUpdateCall;
-  BYTE found[sizeof(kUpdateCallBytes)] = {};
-  if (!mem::Read(reinterpret_cast<uintptr_t>(call), found, sizeof(found)) ||
-      std::memcmp(found, kUpdateCallBytes, sizeof(found)) != 0) {
-    log::Error("forward_fire: this is not the BattlefrontII.exe it was written for (%02X %02X %02X %02X %02X where the controller update should be); nothing is forwarded",
-               found[0], found[1], found[2], found[3], found[4]);
-    return false;
-  }
-  int32_t distance = 0;
-  std::memcpy(&distance, call + 1, sizeof(distance));
-  BYTE* thunk = MakeThunk(reinterpret_cast<void*>(&OnControllerUpdate), call + 5 + distance);
-  if (!thunk) {
-    log::Error("forward_fire: no memory for the hook; nothing is forwarded");
-    return false;
-  }
   g_player = base + kPlayerController;
-  // The four bytes after the call's opcode sit on a four-byte boundary, so
-  // the game's thread sees either the old call or the new one, never half.
-  auto* slot = reinterpret_cast<volatile LONG*>(call + 1);
-  DWORD old = 0;
-  if (!VirtualProtect(call, sizeof(found), PAGE_EXECUTE_READWRITE, &old)) {
-    log::Error("forward_fire: the game's code could not be changed (error %lu); nothing is forwarded", GetLastError());
+  // The four bytes after this call's opcode sit on a four-byte boundary, so
+  // it can be redirected from any thread: the game's sees either the old call
+  // or the new one, never half. The controller is in esi there.
+  if (!callhook::Install(reinterpret_cast<uintptr_t>(base + kUpdateCall), kUpdateCallBytes,
+                         reinterpret_cast<callhook::Handler>(&OnControllerUpdate))) {
+    log::Error("forward_fire: the controller update could not be hooked (not the BattlefrontII.exe this was written for?); nothing is forwarded");
     return false;
   }
-  InterlockedExchange(slot, static_cast<LONG>(thunk - (call + 5)));
-  VirtualProtect(call, sizeof(found), old, &old);
-  FlushInstructionCache(GetCurrentProcess(), call, sizeof(found));
   log::Info("forward_fire: hooked the controller update at BattlefrontII.exe+0x%X", static_cast<unsigned>(kUpdateCall));
   return true;
 }
-
 }  // namespace
 
 void Tick(bool enabled) {
@@ -216,6 +164,8 @@ void SetFunctions(const Functions& functions) {
 }
 
 void SetZoomed(int zoomed) { g_zoomed.store(zoomed, std::memory_order_relaxed); }
+
+void SetAimAllowed(bool allowed) { g_aimAllowed.store(allowed, std::memory_order_relaxed); }
 
 void SetButtons(uint32_t buttons) {
   const uint32_t before = g_buttons.exchange(buttons);

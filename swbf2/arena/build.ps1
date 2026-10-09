@@ -17,10 +17,16 @@
 # the game stays at its menu and the arena is picked from Instant Action like
 # any map. While it starts by itself there is no getting to the menu: quitting
 # the mission starts it again. Rebuild with "none" for that.
+#
+# The arena draws nothing: no ground, no sky. Whatever Battlefront then puts
+# in its picture is the player's (their character, weapon, shots, HUD) and
+# the whole picture can be laid over World at War's. -Ground builds the
+# template's grass and sky back in, for looking at the game on its own.
 param(
     [string]$ModTools = 'C:\BF2_ModTools',
     [string]$GameData = 'E:\SteamLibrary\steamapps\common\Star Wars Battlefront II Classic\GameData',
     [ValidateSet('gcw', 'cw', 'heroes', 'none')][string]$AutoStart = 'gcw',
+    [switch]$Ground,
     [switch]$Fresh,
     [switch]$NoInstall
 )
@@ -120,6 +126,65 @@ foreach ($cfg in Get-ChildItem -LiteralPath (Join-Path $ModTools 'data\Common\Lo
     if ($cfg.BaseName -ne 'Comments') { $text += $ours }
     Write-Text (Join-Path $proj "Common\Localize\$($cfg.Name)") $text
 }
+
+# The world. Rewritten from the template every time, so that -Ground and its
+# absence both get what they ask for and a file is only touched (and so only
+# recompiled) when it comes out different.
+#
+# Without -Ground, four things are done so that nothing but the player is
+# drawn:
+#
+# - The terrain is kept, because every world the tools know has one, but its
+#   "active" square (the part that is compiled, drawn and stood on) is moved
+#   to eight cells in a far corner of the grid.
+# - The player stands instead on the game's own invisible collision blocks
+#   (com_inv_col_64: a 64 m cube, its corner at the object's position), laid
+#   as a floor with their tops at height 0 around where the player appears.
+# - The sky file loses its dome, and its fog is pushed out to where nothing
+#   is.
+# - The command posts, which glow, go to the same far corner. Nothing uses
+#   them: the mission script puts the player in the world from a path.
+$world = Join-Path $proj "Worlds\$Id\world1"
+$templateWorld = Join-Path $template 'Worlds\@#$\world1'
+function Read-Template([string]$name) { $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $templateWorld $name))).Replace('@#$', $Id) }
+function Write-IfChanged([string]$path, [string]$text) {
+    if ((Test-Path -LiteralPath $path) -and $latin1.GetString([IO.File]::ReadAllBytes($path)) -ceq $text) { return }
+    Write-Text $path $text
+}
+$wld = Read-Template '@#$.wld'
+$sky = Read-Template '@#$.sky'
+$conquest = Read-Template 'modes\conquest\@#$_conquest.lyr'
+$terHead = New-Object byte[] 16
+$fs = [IO.File]::OpenRead((Join-Path $templateWorld '@#$.TER')); [void]$fs.Read($terHead, 0, 16); $fs.Close()
+$active = [byte[]]$terHead[8..15]                       # four 16-bit cell numbers: left, top, right, bottom
+if (-not $Ground) {
+    $active = [byte[]](@(500, 500, 508, 508) | ForEach-Object { [BitConverter]::GetBytes([int16]$_) })
+    $centre = -218, 133; $tiles = 5; $size = 64         # the floor: 5 x 5 blocks around where cp1's spawn path is
+    $floor = ''; $n = 0
+    for ($i = 0; $i -lt $tiles; $i++) {
+        for ($j = 0; $j -lt $tiles; $j++) {
+            $n++; $x = $centre[0] + ($i - $tiles / 2) * $size; $z = $centre[1] + ($j - $tiles / 2 + 1) * $size
+            $floor += "`r`nObject(`"waw_floor_$n`", `"com_inv_col_64`", $(900000 + $n))`r`n{`r`n`tChildRotation(1.000, 0.000, 0.000, 0.000);`r`n`tChildPosition($('{0:F3}, {1:F3}, {2:F3}' -f $x, (-$size), $z));`r`n`tSeqNo($(900000 + $n));`r`n`tTeam(0);`r`n`tNetworkId(-1);`r`n}`r`n"
+        }
+    }
+    $wld = $wld.TrimEnd() + "`r`n" + $floor
+    $sky = [regex]::Replace($sky, '(?s)DomeInfo\(\)\s*\{.*\}\s*$', '')
+    $sky = [regex]::Replace($sky, '(?m)^(\s*)FogRange\(-100\.0, 600\.0\);', '$1FogRange(4990.0, 5000.0);')
+    $cp = 0
+    $conquest = [regex]::Replace($conquest, '(Object\("cp\d+", "com_bldg_controlzone", -?\d+\)\s*\{\s*ChildRotation\([^)]*\);\s*ChildPosition\()[^)]*\)', {
+        param($m) $script:cp++; $m.Groups[1].Value + ('{0:F3}, 0.000, 4000.000)' -f (4000 + 16 * $script:cp)) })
+    if ($cp -eq 0) { throw 'the template''s command posts were not where this script looks for them' }
+}
+Write-IfChanged (Join-Path $world "$Id.wld") $wld
+Write-IfChanged (Join-Path $world "$Id.sky") $sky
+Write-IfChanged (Join-Path $world "${Id}_conquest.lyr") $conquest
+$ter = Join-Path $world "$Id.TER"
+$fs = [IO.File]::Open($ter, 'Open', 'ReadWrite')
+try {
+    $now = New-Object byte[] 8; [void]$fs.Seek(8, 'Begin'); [void]$fs.Read($now, 0, 8)
+    if (-not [Linq.Enumerable]::SequenceEqual($now, $active)) { [void]$fs.Seek(8, 'Begin'); $fs.Write($active, 0, 8) }
+} finally { $fs.Close() }
+"world: $(if ($Ground) { 'the template''s ground and sky' } else { 'nothing drawn; an invisible floor of ' + ($tiles * $tiles) + ' blocks' })"
 
 # Ours: the rosters (one mission each) with the script they share, the list of
 # missions to pack, and the script that registers the map and can start it.

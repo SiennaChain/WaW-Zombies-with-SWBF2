@@ -21,6 +21,7 @@
 #include "crashlog.h"
 #include "focus.h"
 #include "frameprobe.h"
+#include "callhook.h"
 #include "input.h"
 #include "log.h"
 #include "memory.h"
@@ -150,6 +151,9 @@ struct Settings {
   int askKeys[kAsks] = {};       // and the key that asks (a Windows virtual-key code)
   input::Functions functions;    // which of the game's functions each WaW button turns on
   float zoomedBelow = 40.0f;     // the game counts as zoomed in when its vertical field of view is under this; 0 = not looked at
+  ValueSpec thirdPerson;         // the view is third person while this address holds this value
+  bool followCamera = false;     // in third person, draw from where WaW's camera is
+
   CoordMapping mapping;
   int tickMs = 16;
 };
@@ -218,6 +222,9 @@ Settings LoadSettings(const Config& config) {
   s.functions.reload = config.GetInt("swbf2", "reload_function", s.functions.reload);
   input::SetFunctions(s.functions);
   s.haveViewProjection = config.GetAddress("swbf2", "view_projection", s.viewProjection);
+  ParseValueSpec("[swbf2] third_person", config.GetString("swbf2", "third_person"), s.thirdPerson);
+  s.followCamera = config.GetInt("swbf2", "follow_camera", 0) != 0;
+
   s.mapping = LoadMapping(config);
   log::Info("follow %d (height %s, velocity %s, facing %s +%d extra, pitch %s), %d held value(s), mapping: scale %.5f z_sign %.0f yaw_sign %.0f yaw_offset %.0f pitch_sign %.0f anchor_waw (%.1f %.1f %.1f) anchor_bf (%.2f %.2f %.2f)",
             s.follow ? 1 : 0, s.followHeight ? "from WaW" : "left to SWBF2",
@@ -421,6 +428,8 @@ void SetVelocity(const Settings& s, const WawPose& pose) {
   g_lastSpeed = std::sqrt(want.x * want.x + want.z * want.z);
 }
 
+void NoteWawCamera(const Settings& s, const WawPlayerState& waw);  // with the camera, below
+
 // Puts the unit where the WaW player is. Call with g_mutex held.
 bool Follow(const Settings& s, SharedBlock* block) {
   if (!s.follow || !s.havePosition || !block || !WawAlive(block)) return false;
@@ -431,6 +440,7 @@ bool Follow(const Settings& s, SharedBlock* block) {
 
   WawPose pose;
   WawNow(s, waw, pose);
+  NoteWawCamera(s, waw);
   const Vec3 target = WawToBf({pose.origin[0], pose.origin[1], pose.origin[2]}, s.mapping);
   float position[3] = {target.x, target.y, target.z};
   if (!s.followHeight) {
@@ -459,6 +469,165 @@ bool Follow(const Settings& s, SharedBlock* block) {
     g_haveLastPitch = false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// The camera, in third person.
+//
+// In third person both games draw the player from behind, and the two
+// pictures only fit if both draw from the same place. WaW's camera cannot be
+// told where to go: it backs off behind the player until a wall is in the
+// way, and only WaW knows where its walls are. So WaW's is the camera, and
+// this game is given it.
+//
+// The game keeps a camera as an object: four rows of four floats at 0x30 that
+// say where it is and how it is turned (which way is right, up and back, then
+// the position), and at 0x70 the same thing inverted, which is what drawing
+// uses. Its renderer has one routine that readies a camera for drawing, run
+// for each part of the frame, and just before that routine reads the camera
+// it makes a call (to set the world transform). That call is sent through
+// OnCameraSetup first (callhook.h), which is the moment the camera can be
+// replaced: after the game has put its own there, before anything is drawn
+// with it.
+//
+// What is taken from WaW is where its camera is relative to its player, not
+// where it is: the unit here stands on this game's floor at this game's
+// height, and the camera has to be behind that.
+// ---------------------------------------------------------------------------
+// Where things are in BattlefrontII.exe (the Steam build), as offsets from
+// where it is loaded. docs/PHASE2.md says how they were found.
+const uintptr_t kCameraSetupCall = 0x2B77A0;                                   // the call in the routine that readies a camera
+const unsigned char kCameraSetupCallBytes[] = {0xE8, 0x1B, 0xC7, 0xFF, 0xFF};  // call BattlefrontII.exe+0x2B3EC0
+const uintptr_t kCameraInUse = 0x3F58E0;   // pointer to the camera that routine is readying
+const size_t kCameraPlacement = 0x30;      // right, up, back, position: 16 floats
+const size_t kCameraPosition = 0x60;
+const size_t kCameraLens = 0x138;          // two floats: the tangents of half the view across and top to bottom
+const size_t kCameraZoom = 0x140;          // what the game divides those by: 1, or more while it is zoomed in
+const float kPlayersOwnCamera = 30.0f;     // metres: a camera further than this from the unit is not the player's (the HUD's sits at the origin)
+const float kBehindThePlayer = 0.6f;       // metres from WaW's player to its camera before WaW counts as drawing from behind
+
+struct WawCamera {
+  bool valid = false;
+  Vec3 offset{};   // from the unit's feet to the camera, in this game's space and units
+  Vec3 forward{};  // unit length
+  Vec3 up{};
+  float tanHalfFov[2] = {0, 0};  // WaW's lens, or zeros if it is not known
+};
+WawCamera g_wawCamera;                     // guarded by g_mutex
+bool g_thirdPerson = false;                // guarded by g_mutex: the game's view is third person
+
+std::atomic<uint32_t> g_camerasReplaced{0};
+float g_gameZoom = 0;                      // guarded by g_mutex: the player's camera's own zoom, as last readied; 0 = not seen
+std::atomic<bool> g_logTransformCallers{false};  // [debug] transform_callers
+
+Vec3 Cross(const Vec3& a, const Vec3& b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+float Dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+bool Normalise(Vec3& v) {
+  const float length = std::sqrt(Dot(v, v));
+  if (length < 1e-4f) return false;
+  v = {v.x / length, v.y / length, v.z / length};
+  return true;
+}
+
+// Whether the game's view is third person.
+bool ThirdPerson(const Settings& s) {
+  double now = 0;
+  const uintptr_t address = s.thirdPerson.type ? mem::Resolve(s.thirdPerson.address) : 0;
+  return address && ReadValue(s.thirdPerson, address, now) && SameValue(s.thirdPerson, now, s.thirdPerson.value);
+}
+
+// Takes WaW's camera from the sample the unit was just placed from. Call
+// with g_mutex held.
+void NoteWawCamera(const Settings& s, const WawPlayerState& waw) {
+  WawCamera camera;
+  if ((waw.flags & kWawCameraValid) && (waw.flags & kWawOriginValid)) {
+    const Vec3 away{waw.cameraOrigin[0] - waw.origin[0], waw.cameraOrigin[1] - waw.origin[1],
+                    waw.cameraOrigin[2] - waw.origin[2]};
+    const Vec3 offset = WawDirectionToBf(away, s.mapping);
+    camera.offset = {offset.x * s.mapping.scale, offset.y * s.mapping.scale, offset.z * s.mapping.scale};
+    camera.forward = WawDirectionToBf({waw.cameraForward[0], waw.cameraForward[1], waw.cameraForward[2]}, s.mapping);
+    camera.up = WawDirectionToBf({waw.cameraUp[0], waw.cameraUp[1], waw.cameraUp[2]}, s.mapping);
+    // WaW's eyes are 60 of its units up. A camera still about there is WaW
+    // drawing from the eyes: nothing to draw a character from.
+    if (waw.flags & kWawFovValid) {
+      camera.tanHalfFov[0] = waw.tanHalfFov[0];
+      camera.tanHalfFov[1] = waw.tanHalfFov[1];
+    }
+    const Vec3 fromEyes{away.x, away.y, away.z - 60.0f};
+    camera.valid = Normalise(camera.forward) && Normalise(camera.up) &&
+                   std::sqrt(Dot(fromEyes, fromEyes)) * s.mapping.scale > kBehindThePlayer;
+  }
+  g_wawCamera = camera;
+}
+
+// [debug] transform_callers: says where in the game each kind of transform is
+// set from, the first time each place is seen (the frame probe passes every
+// SetTransform on). It is how the camera routine was found not to set its
+// transforms itself: they all come from one place, a wrapper.
+void OnTransform(unsigned state, void* caller) {
+  if (g_logTransformCallers.load(std::memory_order_relaxed)) {
+    static uintptr_t seen[24];
+    static unsigned seenState[24];
+    static int count = 0;
+    // Only the game's own calls: Direct3D sets every transform itself when a
+    // device is made. The exe is well under 32 MB.
+    const uintptr_t from = reinterpret_cast<uintptr_t>(caller);
+    const uintptr_t offset = from - reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    bool known = offset >= 0x2000000;
+    for (int i = 0; i < count; ++i) known = known || (seen[i] == from && seenState[i] == state);
+    if (!known && count < 24) {
+      seen[count] = from;
+      seenState[count++] = state;
+      log::Info("[debug] transform_callers: transform %u set from BattlefrontII.exe+0x%X", state,
+                static_cast<unsigned>(offset));
+    }
+  }
+}
+
+// Runs on the game's own thread, in the routine that readies a camera, once
+// for each part of the frame: see above.
+void __cdecl OnCameraSetup(void*) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const Settings& s = g_settings;
+  if (!s.followCamera || !g_thirdPerson || !g_wawCamera.valid || !g_following) return;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  uint32_t camera = 0;
+  const uintptr_t positionAddr = mem::Resolve(s.position);
+  float unit[3], was[3];
+  if (!mem::Read(base + kCameraInUse, &camera, sizeof(camera)) || !camera || !IsUnit(s, positionAddr) ||
+      !mem::ReadFloat3(positionAddr, unit) || !mem::ReadFloat3(camera + kCameraPosition, was)) {
+    return;
+  }
+  const Vec3 apart{was[0] - unit[0], was[1] - unit[1], was[2] - unit[2]};
+  if (Dot(apart, apart) > kPlayersOwnCamera * kPlayersOwnCamera) return;
+
+  const Vec3 forward = g_wawCamera.forward;
+  Vec3 right = Cross(forward, g_wawCamera.up);
+  if (!Normalise(right)) return;
+  const Vec3 up = Cross(right, forward);
+  const Vec3 back{-forward.x, -forward.y, -forward.z};
+  const Vec3 at{unit[0] + g_wawCamera.offset.x, unit[1] + g_wawCamera.offset.y, unit[2] + g_wawCamera.offset.z};
+  const float placement[32] = {
+      right.x, right.y, right.z, 0, up.x,    up.y,    up.z,    0,
+      back.x,  back.y,  back.z,  0, at.x,    at.y,    at.z,    1,
+      // and inverted: the same turn the other way, then the position brought back
+      right.x, up.x,    back.x,  0, right.y, up.y,    back.y,  0,
+      right.z, up.z,    back.z,  0, -Dot(at, right), -Dot(at, up), -Dot(at, back), 1,
+  };
+  if (mem::Write(camera + kCameraPlacement, placement, sizeof(placement))) ++g_camerasReplaced;
+
+  // And WaW's lens, so that the character stays the size WaW's view of the
+  // room makes it when WaW narrows its view to aim. The game's own zoom is
+  // left where it is and allowed for (TellZoom looks at it): what is drawn
+  // with is the lens divided by the zoom.
+  float zoom = 1.0f;
+  if (mem::Read(camera + kCameraZoom, &zoom, sizeof(zoom)) && zoom > 0.1f && zoom < 100.0f) {
+    g_gameZoom = zoom;
+    if (g_wawCamera.tanHalfFov[0] > 0.05f && g_wawCamera.tanHalfFov[1] > 0.05f) {
+      const float lens[2] = {g_wawCamera.tanHalfFov[0] * zoom, g_wawCamera.tanHalfFov[1] * zoom};
+      mem::Write(camera + kCameraLens, lens, sizeof(lens));
+    }
+  }
 }
 
 // [debug] hold1 .. hold8 = <address> = <u8|u32|f32> <value>
@@ -617,7 +786,10 @@ void ForwardButtons(SharedBlock* block) {
 void TellZoom(const Settings& s) {
   static int last = -1, same = 0, told = -1;
   const float fov = s.zoomedBelow > 0 ? OwnFovDegrees(s) : 0;
-  const int zoomed = fov > 0 ? (fov < s.zoomedBelow ? 1 : 0) : -1;
+  int zoomed = fov > 0 ? (fov < s.zoomedBelow ? 1 : 0) : -1;
+  // While the camera is being given WaW's lens the field of view says
+  // nothing about this game's zoom; the camera's own zoom factor does.
+  if (g_gameZoom > 0) zoomed = g_gameZoom > 1.2f ? 1 : 0;
   same = zoomed == last ? same + 1 : 0;
   last = zoomed;
   if (same < 3 || zoomed == told) return;
@@ -625,13 +797,30 @@ void TellZoom(const Settings& s) {
   input::SetZoomed(zoomed);
 }
 
+// The camera routine's call is redirected from here, the game's own thread:
+// the four bytes changed do not sit on a four-byte boundary, so it must not
+// be done while that thread could be making the call. Call with g_mutex held.
+void HookCamera(const Settings& s) {
+  static bool tried = false;
+  if (tried || !s.followCamera) return;
+  tried = true;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  if (callhook::Install(base + kCameraSetupCall, kCameraSetupCallBytes, &OnCameraSetup)) {
+    log::Info("camera: hooked the routine that readies it at BattlefrontII.exe+0x%X", static_cast<unsigned>(kCameraSetupCall));
+  } else {
+    log::Error("camera: the routine that readies it could not be hooked (not the BattlefrontII.exe this was written for?); third person keeps this game's own camera");
+  }
+}
+
 void BridgeFrame() {
   ++g_frames;
   std::lock_guard<std::mutex> lock(g_mutex);
+  HookCamera(g_settings);
   g_following = Follow(g_settings, g_block);
   Hold(g_settings);
   ForwardButtons(g_block);
   TellZoom(g_settings);
+  g_gameZoom = 0;  // the frame is over; the next one's camera says again
 }
 
 void BridgeMain(HMODULE self) {
@@ -648,12 +837,19 @@ void BridgeMain(HMODULE self) {
   // weapon: the second depth-only clear of the frame.
   const auto probe = [&] {
     const bool publish = config.GetInt("overlay", "publish", 0) != 0;
+    // cut = 0 is for an arena that draws nothing but the player, which is
+    // what swbf2/arena builds: the whole frame is the picture, and only its
+    // black background has to go. A number is for a world with a ground and
+    // a sky in it: the picture is cut at that depth-only clear instead.
+    const int cut = config.GetInt("overlay", "cut", 0);
     frameprobe::Request(dir, config.GetString("debug", "frame_dump"));
-    frameprobe::SetCut(publish ? config.GetInt("overlay", "cut", 2) : config.GetInt("debug", "frame_cut", 0),
+    frameprobe::SetCut(publish ? cut : config.GetInt("debug", "frame_cut", 0),
                        publish ? 0 : std::strtoul(config.GetString("debug", "frame_cut_colour", "0").c_str(), nullptr, 0));
+    frameprobe::SetTransparentClears((publish && cut == 0) || config.GetInt("debug", "transparent_clears", 0) != 0);
     overlay::SetPublish(publish);
     input::SetForced(static_cast<uint32_t>(config.GetInt("debug", "force_buttons", 0)));
     input::SetForcedFunctions(std::strtoul(config.GetString("debug", "force_functions", "0").c_str(), nullptr, 0));
+    g_logTransformCallers = config.GetInt("debug", "transform_callers", 0) != 0;
   };
   probe();
 
@@ -664,6 +860,7 @@ void BridgeMain(HMODULE self) {
     g_settings = settings;
     g_block = shm.block();
   }
+  frameprobe::SetTransformObserver(&OnTransform);
 
   BfPlayerState state{};
   bool peerWasAlive = false;
@@ -725,7 +922,21 @@ void BridgeMain(HMODULE self) {
       askKeyWasDown[i] = down;
     }
 
+    // WaW is told when this game is showing the player from behind, so that
+    // it can do the same; and only while there is a unit to show.
+    const bool thirdPerson = following && ThirdPerson(settings);
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      g_thirdPerson = thirdPerson;
+    }
+
+    // In third person this game is never zoomed: its zoom takes the character
+    // out of the picture for a view down the sights. WaW's aim narrows WaW's
+    // view, and the camera is given that instead (OnCameraSetup).
+    input::SetAimAllowed(!thirdPerson);
+
     state.flags = following ? kBfFollowing : 0;
+    if (thirdPerson) state.flags |= kBfThirdPerson;
     const uintptr_t positionAddr = settings.havePosition ? mem::Resolve(settings.position) : 0;
     if (positionAddr && mem::ReadFloat3(positionAddr, state.rawPosition)) {
       state.flags |= kBfPositionValid;
@@ -746,9 +957,18 @@ void BridgeMain(HMODULE self) {
         settings = LoadSettings(config);
         if (settings.poke.type && settings.poke.text != previousPoke) ApplyPoke(settings.poke);
         probe();
+
         std::lock_guard<std::mutex> lock(g_mutex);
         g_settings = settings;
         for (HoldState& hold : g_holds) hold = HoldState{};
+      }
+      // Say when the camera starts and stops being WaW's.
+      static bool cameraWasReplaced = false;
+      const bool cameraReplaced = g_camerasReplaced.exchange(0) != 0;
+      if (cameraReplaced != cameraWasReplaced) {
+        log::Info(cameraReplaced ? "camera: third person, drawing from where WaW's camera is"
+                                 : "camera: this game's own again");
+        cameraWasReplaced = cameraReplaced;
       }
       if (state.flags & kBfPositionValid) {
         log::Info("bf raw (%.2f %.2f %.2f)%s", state.rawPosition[0], state.rawPosition[1],
