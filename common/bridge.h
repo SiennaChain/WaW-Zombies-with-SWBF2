@@ -5,7 +5,20 @@
 
 #include <string>
 
+#include "session.h"
+
 namespace wawbf {
+
+// Implemented once per game: the exe this bridge was made for. In any other,
+// or in that one started by anything but the launcher, the proxy passes
+// Direct3D through and none of the rest of this is ever called (session.h).
+const session::Game& BridgeGame();
+
+// Implemented once per game. Called as the game loads the proxy, before the
+// game has run a line of its own, with whether the bridge is going to run:
+// for what has to be settled that early. It is inside DllMain, so nothing in
+// it may go further than kernel32.
+void BridgeLoaded(HMODULE self, bool live);
 
 // Implemented once per game (waw/src/main.cpp, swbf2/src/main.cpp). Runs on
 // its own thread, started when the game loads the proxy, and normally runs

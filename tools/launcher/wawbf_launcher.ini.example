@@ -1,0 +1,66 @@
+; Settings for the launcher. This file goes beside it as wawbf_launcher.ini.
+; Every line is optional; what is here is what the launcher does without it.
+; A line starting with ';' is a note.
+;
+; The picture's settings are easier changed from the launcher itself: its
+; Settings button (or Settings.cmd beside it) writes them here.
+
+[launcher]
+; --- The picture ------------------------------------------------------------
+; These are the settings World at War only lets a player change at its main
+; menu, which the launcher skips: from inside a map its Graphics options show
+; them greyed out. So they are set here, and World at War is told them as it
+; starts (and remembers them, as it would anything set in its own options).
+;
+; 1 = World at War fills the screen. 0 = it runs in a window.
+fullscreen = 1
+; World at War's picture, in pixels. 0 = the size of the screen (or, in a
+; window, 1280 x 720). It has to be a size the screen can show: one of the
+; ones World at War offers in its own video options. The mod is made for
+; widescreen (16:9) pictures.
+width = 0
+height = 0
+; How many times a second the screen is redrawn, fullscreen: 60, 120, 144...
+; 0 = as World at War has it.
+refresh = 0
+; Anti-aliasing: 1 = off, 2 or 4 = that many samples. 0 = as World at War has
+; it.
+antialiasing = 0
+; "Sync every frame": 1 = each frame waits for the screen (no tearing, and no
+; more frames a second than the screen shows), 0 = it does not. -1 = as World
+; at War has it.
+sync_every_frame = -1
+; 0 = start World at War with whatever its own video options say, and ignore
+; fullscreen, width and height above. Set width and height to what those
+; options say all the same: Battlefront II's picture is made the same shape.
+waw_video = 1
+; Battlefront II's picture is drawn over World at War's. It is the same shape
+; and has this many lines at most; World at War stretches it to fit. Fewer is
+; faster and softer. The most there can be is 1200.
+swbf2_height = 1080
+
+; --- Which map --------------------------------------------------------------
+; With one map installed the launcher starts it at once. With more it asks,
+; unless one is named here: nazi_zombie_prototype (Nacht der Untoten),
+; nazi_zombie_asylum, nazi_zombie_sumpf, nazi_zombie_factory.
+map =
+
+; --- Where the games are ----------------------------------------------------
+; Found through Steam. Only if that fails: the folder with CoDWaW.exe in it,
+; and the folder with BattlefrontII.exe in it (it is called GameData).
+waw_folder =
+swbf2_folder =
+
+; --- The rest ---------------------------------------------------------------
+; More for each game's command line. (Battlefront II is always started with
+; /win /nointro /resolution <its picture>.)
+swbf2_args =
+waw_args =
+; 1 = start the map with World at War's cheats allowed (+devmap in place of
+; +map): its console's "god" and the like. For testing.
+cheats = 0
+; 1 = close Battlefront II when World at War has gone.
+close_swbf2 = 1
+; How long, in seconds, Battlefront II is given to load its arena and put a
+; character into it before the launcher gives up and says why.
+swbf2_wait_s = 120

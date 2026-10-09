@@ -4,3 +4,4 @@ out/
 *.log
 wawbf.ini
 tools/oat/
+dist/

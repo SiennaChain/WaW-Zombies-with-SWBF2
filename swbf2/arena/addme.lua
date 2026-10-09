@@ -1,5 +1,6 @@
 -- Adds the arena to Battlefront II's Instant Action list, and, if it was built
--- to, starts it by itself. The game runs this once while its menus load.
+-- to and the launcher started the game, starts it by itself. The game runs
+-- this once while its menus load.
 --
 -- The arena shows up under three combinations, one per roster:
 --   Galactic Civil War, Conquest     -> WAWg_con  (Empire and Alliance)
@@ -43,10 +44,38 @@ AddDownloadableContent("WAW","WAWg_eli",4)
 -- There is no log to read in the shipped game, so each step leaves a string
 -- in memory ("wawbf-trace:<step>") that tools/probe can look for. The strings
 -- are put together at run time so that finding one means the step ran.
+--
+-- And only when the launcher started the game. This add-on sits in the game's
+-- folder whatever the game is started for, and a player who starts it from
+-- Steam wants its menus. The game's bridge (its d3d9.dll) makes a file beside
+-- this script as the game starts, if the launcher started it, and takes it
+-- away if not (swbf2/src/main.cpp, BridgeLoaded). No file, or no bridge to
+-- have made one: the arena is one more map under Instant Action and nothing
+-- else here happens.
 local AUTO_START = "@AUTO_START@"
 
 local function Trace(step)
     gWawTrace = "wawbf-trace:" .. step
+end
+
+-- (The game looks for files from where its own levels are, two folders down
+-- from the one its exe is in.)
+local function StartedByLauncher()
+    if not ScriptCB_IsFileExist then
+        gWawFlag = "wawbf-trace:" .. "flag-cannot-be-looked-for"
+        return nil
+    end
+    local there = ScriptCB_IsFileExist("..\\..\\addon\\WAW\\wawbf_start.txt")
+    if there and there ~= 0 then
+        gWawFlag = "wawbf-trace:" .. "flag-found"
+        return 1
+    end
+    gWawFlag = "wawbf-trace:" .. "flag-not-there"
+    return nil
+end
+
+if AUTO_START ~= "" and not StartedByLauncher() then
+    AUTO_START = ""
 end
 
 local function LaunchArena()

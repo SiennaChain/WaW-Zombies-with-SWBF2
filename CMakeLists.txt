@@ -28,6 +28,7 @@ if(WIN32)
     common/memory.cpp
     common/overlay.cpp
     common/pad.cpp
+    common/session.cpp
     common/shm.cpp)
   target_link_libraries(wawbf_common PUBLIC wawbf_protocol)
   target_compile_definitions(wawbf_common PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
@@ -62,6 +63,15 @@ if(WIN32)
     target_link_options(wawbf_monitor PRIVATE -static)
   endif()
   set_target_properties(wawbf_monitor PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY $<1:${CMAKE_BINARY_DIR}/out/tools>)
+
+  # The window the player starts everything from: a list of maps.
+  add_executable(wawbf_launcher WIN32 tools/launcher/main.cpp)
+  target_link_libraries(wawbf_launcher PRIVATE wawbf_common)
+  if(MINGW)
+    target_link_options(wawbf_launcher PRIVATE -static -municode)
+  endif()
+  set_target_properties(wawbf_launcher PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY $<1:${CMAKE_BINARY_DIR}/out/tools>)
 endif()
 

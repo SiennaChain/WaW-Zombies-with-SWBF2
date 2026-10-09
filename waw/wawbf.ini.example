@@ -1,8 +1,23 @@
-; Copy to wawbf.ini next to d3d9.dll in the Call of Duty World at War folder
-; (the one with CoDWaW.exe). Comments start with ';'.
+; Goes next to d3d9.dll in the Call of Duty World at War folder (the one with
+; CoDWaW.exe) as wawbf.ini. Comments start with ';'. What is here is what a
+; release is installed with: it is the file the launcher puts there.
 
 [bridge]
 tick_hz = 60
+; The bridge is loaded every time the game starts and does nothing at all
+; unless the launcher started the game and CoDWaW.exe is the build these
+; addresses were found in (common/session.h). For working on the mod:
+; without_launcher = 1 has it run however the game was started, any_exe = 1
+; in whatever build of the exe it finds itself.
+without_launcher = 0
+any_exe = 0
+
+[window]
+; 1 = the game is told the screen's real size. Windows tells a game of this
+; age a smaller one on a screen set to show things larger (125%, 150%...),
+; and stretches its picture to fit: the launcher asks the game for the
+; screen's real number of pixels, which it would not then get.
+dpi_aware = 1
 
 [waw]
 ; Where CoDWaW.exe keeps the local player's position (3 floats, feet,
@@ -117,6 +132,18 @@ head_entity_origin = 0x24
 gun_angles = CoDWaW.exe+0x312B65C
 aim_field = CoDWaW.exe+0x136C8A0
 aim_mark = 0
+; The marks. The shot itself is fired by the half of the game that keeps the
+; world, along gun_angles. The marks it leaves (the hole in a wall, the dust
+; off a floor) are drawn by the other half, which works the same shot out
+; again for itself; and from behind the player it takes the direction not
+; from gun_angles but from the way the player's soldier faces. So the shot
+; went to the middle of the screen and its marks landed beside it, by the
+; distance the camera stands beside the character: a player sees the marks,
+; and takes them for the shots. This is the place in that routine where the
+; soldier's angles are taken, made to take gun_angles in their place (the
+; address in it is gun_angles': the game is always loaded at the same place).
+; The same form as scoreboard_alone below. Leave it out for the game's own.
+marks_from_behind = CoDWaW.exe+0x68ED2: 8B 93 D0 00 00 00 69 D2 94 05 00 00 81 C2 48 82 5B 03 = BA 5C B6 52 03 90 90 90 90 90 90 90 90 90 90 90 90 90
 ; Being hit does not throw the view about from behind the character: the
 ; number behind bg_viewKickScale (how far the view is thrown for each point of
 ; damage) is kept at 0 while the view is third person, and put back afterwards.
@@ -236,11 +263,21 @@ quiet_kits = 13
 ; SWBF2's picture is drawn over everything, so while the game is paused it
 ; stands aside for the menu.
 paused = CoDWaW.exe+0x1B552C4 > 0x10
+; No main menu. The launcher starts the game straight into a map, with that
+; map's build of the mod, and the game's own menu would offer the other maps
+; with the wrong one. quit_at_menu = 1: when the game has been in a map and is
+; then out of one for three seconds (Quit in the pause menu, or the game over
+; screen run out), it is told to quit, as "quit" typed into its console would
+; (console, above). running_setting is the setting of the game's own that
+; says whether it is in a map, found by name like the three above.
+running_setting = sv_running
+quit_at_menu = 1
 
 [overlay]
-; 1 = draw SWBF2's first-person weapon and HUD over this game's picture.
-; Needs [overlay] publish = 1 on the SWBF2 side. Can be switched live.
-draw = 0
+; 1 = draw SWBF2's picture over this game's: the player's character, weapon
+; and shots, and what is kept of its HUD. Needs [overlay] publish = 1 on the
+; SWBF2 side. Can be switched live.
+draw = 1
 
 [proxy]
 ; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.
@@ -253,3 +290,8 @@ log_weapon_state = 0
 ; been typed into the console: it is the same switch ([waw] player_flags), so
 ; typing god there turns it off, and on again. For testing.
 god_at_start = 0
+; Whatever is written here is given to the game's console, once, each time
+; the line is changed (this file is read again whenever it is saved): for
+; trying something in a game whose own console cannot be got at, because it
+; fills the screen or nobody is at the keyboard. Only with a player in a map.
+console_line =

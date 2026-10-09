@@ -1,8 +1,17 @@
-; Copy to wawbf.ini next to d3d9.dll in Star Wars Battlefront II Classic\GameData
-; (the folder with BattlefrontII.exe). Comments start with ';'.
+; Goes next to d3d9.dll in Star Wars Battlefront II Classic\GameData (the
+; folder with BattlefrontII.exe) as wawbf.ini. Comments start with ';'. What
+; is here is what a release is installed with: it is the file the launcher
+; puts there.
 
 [bridge]
 tick_hz = 60
+; The bridge is loaded every time the game starts and does nothing at all
+; unless the launcher started the game and BattlefrontII.exe is the build
+; these addresses were found in (common/session.h). For working on the mod:
+; without_launcher = 1 has it run however the game was started, any_exe = 1
+; in whatever build of the exe it finds itself.
+without_launcher = 0
+any_exe = 0
 
 [swbf2]
 ; Where BattlefrontII.exe keeps the player unit's position (3 floats).
@@ -26,19 +35,19 @@ player_velocity = BattlefrontII.exe+0x1A296B0 > 0x3BC
 ; The game works the aim direction and the camera out from it.
 aim_pitch = BattlefrontII.exe+0x1A296B0 > 0x3C8
 ; 1 = move the BF unit to wherever the WaW player is.
-follow = 0
+follow = 1
 ; 1 = give the unit the WaW player's speed instead of none, so the game has
 ; something to choose its animation from. Needs player_velocity.
-follow_velocity = 0
+follow_velocity = 1
 ; 1 = aim up and down with the WaW player. Needs aim_pitch.
-follow_pitch = 0
+follow_pitch = 1
 ; 0 = follow on the ground plane only and leave the unit's height to SWBF2,
 ; so it stands on SWBF2's ground. 1 = take height from WaW as well.
 follow_height = 0
 ; 1 = turn the unit to face where the WaW player is looking. The unit's
 ; transform is the 4x4 ending at player_position, and its direction rows are
 ; rewritten every frame. The log says how often the game kept them.
-follow_facing = 0
+follow_facing = 1
 ; How far behind "now" the WaW player is placed, in milliseconds. The two
 ; games draw at different rates; the unit is placed between the two newest
 ; WaW samples at this delay, which is what keeps it from stuttering. About
@@ -51,10 +60,19 @@ facing_extra =
 ; 1 = keep a match playing when the game's window is not the focused one.
 ; Without it the match pauses as soon as you click another window. Needs
 ; windowed mode (/win). Can be switched live.
-keep_running = 0
+keep_running = 1
 ; 1 = do not show the game's window at all. It goes on drawing and playing.
-; Can be switched live; leave it 0 while there are menus to click through.
-hidden = 0
+; The window is kept from ever appearing (and so from ever coming in front of
+; World at War, which with that game filling the screen would put it away).
+; Can be switched live: 0 brings the window out, for looking at this game by
+; itself or clicking through a menu of its own.
+hidden = 1
+; The game puts the pointer back in the middle of its window every frame it
+; believes it is the window in front, which with keep_running is every frame:
+; the pointer could then be used for nothing else, World at War's own menus
+; included. 0: it only moves the pointer while its window really is the one
+; in front. 1: as the game was.
+pointer_in_background = 0
 ; 1 = this game is heard while another window is in front (it is otherwise
 ; silent the moment it is not the one with the keyboard, which under World at
 ; War is always). Only sounds the game makes after the bridge is loaded are
@@ -72,7 +90,7 @@ devices_in_background = 0
 ; devices, so it does not matter what fire is bound to in this game's options
 ; (mouse, key or controller) or that its window is not the one in front. Can
 ; be switched live. See docs/PHASE2.md.
-forward_fire = 0
+forward_fire = 1
 ; Which of the game's functions each WaW button works, by the game's own
 ; numbering: 0 = primary fire, 5 = zoom, 7 = reload (docs/PHASE2.md).
 ; -1 = that button is not passed on. WaW's buttons are its own attack, aim
@@ -106,11 +124,17 @@ view_toggle_pad = 0x0008
 ; so that it draws from behind the player as well and leaves its own soldier
 ; out. Same address as view_toggle. Format: <address> = <u8|u32|f32> <value>
 third_person = BattlefrontII.exe+0x1AF9106 = u8 0
+; 1 = a game begins in third person, from behind the character, whichever
+; view this game was last left in (it remembers that between runs). The view
+; is set once, when the first character appears; after that it is the
+; player's to change (view_toggle) and stays as they leave it. Needs
+; third_person above.
+start_from_behind = 1
 ; 1 = in third person, draw from exactly where WaW's camera is, so that the
 ; character stands where WaW's player does. Without it this game's own
 ; camera is used, which sits somewhere else and knows nothing of WaW's walls.
 ; See docs/PHASE2.md.
-follow_camera = 0
+follow_camera = 1
 ; Changing character without the spawn screen, whichever window has the
 ; keyboard. The arena's mission script does the changing; the bridge asks it
 ; by writing a number where the script looks, which is the unit's health (the
@@ -211,9 +235,12 @@ unit_energy_full = 100
 
 [mapping]
 ; How WaW space maps onto BF space - see protocol/wawbf_protocol.h.
-; anchor_waw (WaW units) lands on anchor_bf (BF units).
-anchor_waw = 0, 0, 0
-anchor_bf = 0, 0, 0
+; anchor_waw (WaW units) lands on anchor_bf (BF units). These put where the
+; player starts in Nacht der Untoten on the middle of the arena's floor,
+; which is flat for 160 metres every way from there: further than any of the
+; map is from its start.
+anchor_waw = -11.30, 407.78, 1.13
+anchor_bf = -217.810, -0.006, 132.689
 ; BF units per WaW unit. 0.0254 assumes BF uses metres and WaW inches.
 scale = 0.0254
 ; -1 is right; settled by eye, see docs/PHASE1.md. With 1 the unit turns left
@@ -286,7 +313,7 @@ transform_callers = 0
 ;          person, and no shots: those are part of the world.
 ;
 ; See docs/PHASE2.md.
-publish = 0
+publish = 1
 cut = 0
 ; Two things of this game's own that the whole picture (cut = 0) leaves out.
 ;

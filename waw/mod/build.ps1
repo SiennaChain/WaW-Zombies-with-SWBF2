@@ -23,13 +23,21 @@
 # to find everything it is made of (models, effects, sounds), so it is shown
 # the game's own zones (-Game) and the dump.
 #
+# One build for each map (-Map), each its own mod: every map comes with its
+# own copy of the game's zombie scripts (the later the map, the more of them
+# and the more they do), and a script in a mod replaces the game's for every
+# map at once, so a mod made from one map's scripts breaks the others. The mod
+# is named after its map, "swbf2_" and the map's name, which is how the
+# launcher (tools/launcher) finds it. Only Nacht der Untoten is done so far.
+#
 # Installed to %LOCALAPPDATA%\Activision\CoDWaW\mods\<Mod>. Start the game
 # with  +set fs_game mods/<Mod>  to use it.
 param(
     [string]$StockDump = 'C:\Claude\waw-stock-dump',
     [string]$Game = 'E:\SteamLibrary\steamapps\common\Call of Duty World at War',
     [string]$Oat = '',
-    [string]$Mod = 'swbf2_zombies',
+    [ValidateSet('nazi_zombie_prototype', 'nazi_zombie_asylum', 'nazi_zombie_sumpf', 'nazi_zombie_factory')][string]$Map = 'nazi_zombie_prototype',
+    [string]$Mod = '',
     # How hard the guns hit: this many times Battlefront II's own numbers, which are what the
     # table below has. (Not the Ray Gun under Leia's blaster, which is as the game has it.)
     [double]$GunDamage = 2.0,
@@ -37,11 +45,16 @@ param(
     # times the ammunition. The magazine stays the size it was: Battlefront II's does.
     [double]$PackDamage = 2.0,
     [double]$PackAmmo = 1.5,
-    [switch]$NoInstall
+    [switch]$NoInstall,
+    # Where the mod goes, in place of World at War's own mods\<Mod>: tools\package.ps1 has it
+    # put where a release is gathered, and leaves the game alone.
+    [string]$InstallTo = ''
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repo = Split-Path -Parent (Split-Path -Parent $here)
+if (-not $Mod) { $Mod = "swbf2_$Map" }
+if ($Map -ne 'nazi_zombie_prototype') { throw "there is no build for $Map yet: what this script changes in the game's scripts is written for Nacht der Untoten's copies of them" }
 if (-not $Oat) { $Oat = Join-Path $repo 'tools\oat' }
 $linker = Join-Path $Oat 'Linker.exe'
 $stockMap = Join-Path $StockDump 'nazi_zombie_prototype'
@@ -247,11 +260,11 @@ if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -For
 
 # The map's script, with ours started from it. Ours has to run before the
 # game's own start-up does, because that is when weapons are precached.
-$map = $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $stockMap 'maps\nazi_zombie_prototype.gsc')))
+$mapScript = $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $stockMap "maps\$Map.gsc")))
 $anchor = 'maps\_zombiemode::main();'
-if (([regex]::Matches($map, [regex]::Escape($anchor))).Count -ne 1) { throw "the map's script does not call $anchor exactly once: not the script this was written for" }
-$map = $map.Replace($anchor, "maps\_wawbf::init();`r`n`t$anchor")
-Write-Text (Join-Path $work 'raw\maps\nazi_zombie_prototype.gsc') $map
+if (([regex]::Matches($mapScript, [regex]::Escape($anchor))).Count -ne 1) { throw "the map's script does not call $anchor exactly once: not the script this was written for" }
+$mapScript = $mapScript.Replace($anchor, "maps\_wawbf::init();`r`n`t$anchor")
+Write-Text (Join-Path $work "raw\maps\$Map.gsc") $mapScript
 # Ours, with the two numbers above written into it: the shots it works out
 # itself have to hit as hard as the weapons' own.
 $ours = $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $here 'scripts\maps\_wawbf.gsc')))
@@ -303,7 +316,7 @@ $powerups = Edit-Function $powerups 'full_ammo_on_hud' { param($body) ([regex]'s
 $powerups = Edit-Function $powerups 'full_ammo_move_hud' { param($body) $body.Replace('self.y = 270;', 'self.y = 40;') }
 Write-Text (Join-Path $work 'raw\maps\_zombiemode_powerups.gsc') $powerups
 
-$scripts = 'maps/nazi_zombie_prototype.gsc', 'maps/_zombiemode_weapons.gsc', 'maps/_zombiemode_powerups.gsc', 'maps/_wawbf.gsc'
+$scripts = "maps/$Map.gsc", 'maps/_zombiemode_weapons.gsc', 'maps/_zombiemode_powerups.gsc', 'maps/_wawbf.gsc'
 Write-Text (Join-Path $work 'zone_source\mod.zone') (">game,T4`r`n`r`n" + (($scripts | ForEach-Object { "rawfile,$_`r`n" }) -join '') + (($Builds.Keys | ForEach-Object { "weapon,$_`r`n" }) -join '') + (($Borrowed | ForEach-Object { "$_`r`n" }) -join ''))
 
 # The weapons. A weapon file is one line: WEAPONFILE\name\value\name\value...
@@ -341,6 +354,16 @@ foreach ($name in $Builds.Keys) {
     }
     if ($at.ContainsKey('notetrackSoundMap')) {
         $parts[$at['notetrackSoundMap']] = (($parts[$at['notetrackSoundMap']] -split "`r?`n") | Where-Object { $_ -match '^knife_' }) -join "`n"
+    }
+    # And what is seen of the weapon itself is Battlefront II's too: its flash at the muzzle, and no
+    # brass thrown out of a blaster. This game's own are played at the muzzle of the gun its own
+    # soldier holds, who is not drawn but is standing exactly where Battlefront II's character is. So
+    # from behind the character, looking down past it, a rifle's burst of orange sparks stood in the
+    # air beside the character with every shot: a pace to the left of the crosshair and of where the
+    # shot landed, and taken for the shot landing. (Looking level it is behind the character, which
+    # is drawn over everything of this game's. Through the eyes this game's gun is not drawn at all.)
+    foreach ($field in @($at.Keys | Where-Object { $_ -match '^(view|world)(Flash|ShellEject|LastShotEject)Effect$' })) {
+        $parts[$at[$field]] = ''
     }
     # "kick" scales the weapon's recoil: how far a shot throws the view and the gun, hip and aimed.
     if ($spec.kick) {
@@ -395,7 +418,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $ff)) { $out | Where-Ob
 'built {0:N0} bytes  {1}' -f (Get-Item -LiteralPath $ff).Length, $ff
 
 if (-not $NoInstall) {
-    $dest = Join-Path $env:LOCALAPPDATA "Activision\CoDWaW\mods\$Mod"
+    $dest = if ($InstallTo) { $InstallTo } else { Join-Path $env:LOCALAPPDATA "Activision\CoDWaW\mods\$Mod" }
     $sp = Join-Path $dest 'weapons\sp'
     if (-not (Test-Path -LiteralPath $sp)) { [void](New-Item -ItemType Directory -Path $sp -Force) }
     Copy-Item -LiteralPath $ff -Destination (Join-Path $dest 'mod.ff') -Force

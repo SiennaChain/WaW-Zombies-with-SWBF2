@@ -12,11 +12,17 @@
 # The game has to be restarted to see a new or changed addon.
 #
 # -AutoStart says which roster the game goes straight into once its main menu
-# is reached, with no map to pick: gcw (Empire and Alliance, the default), cw
-# (Republic and Separatists) or heroes (every hero and villain). With "none"
-# the game stays at its menu and the arena is picked from Instant Action like
-# any map. While it starts by itself there is no getting to the menu: quitting
-# the mission starts it again. Rebuild with "none" for that.
+# is reached, with no map to pick: heroes (every hero and villain, and a
+# soldier of each army: the default, and the one the rest of the mod is made
+# for; a character of the other two that has no kit leaves World at War's
+# player with nothing), gcw (Empire and Alliance) or cw (Republic and
+# Separatists). With "none" the game stays at its menu and the arena is
+# picked from Instant Action like any map.
+#
+# It only goes straight in when the launcher started the game (addme.lua says
+# how it knows). Started from Steam it comes up at its own menus as it always
+# did, whatever this was built with, and the arena is one more map in its
+# list.
 #
 # The arena draws nothing: no ground, no sky. Whatever Battlefront then puts
 # in its picture is the player's (their character, weapon and shots, and what
@@ -32,7 +38,7 @@
 param(
     [string]$ModTools = 'C:\BF2_ModTools',
     [string]$GameData = 'E:\SteamLibrary\steamapps\common\Star Wars Battlefront II Classic\GameData',
-    [ValidateSet('gcw', 'cw', 'heroes', 'none')][string]$AutoStart = 'gcw',
+    [ValidateSet('gcw', 'cw', 'heroes', 'none')][string]$AutoStart = 'heroes',
     [switch]$Ground,
     [double]$HudLift = 0.207,
     # Where the word that says a weapon has overheated goes (its middle across, its top down;
@@ -43,7 +49,10 @@ param(
     [double[]]$OverheatAt = @(0.245, 0.598),
     [switch]$FullHud,
     [switch]$Fresh,
-    [switch]$NoInstall
+    [switch]$NoInstall,
+    # Where the add-on goes, in place of the game's own addon\WAW: tools\package.ps1 has it
+    # put where a release is gathered, and leaves the game alone.
+    [string]$InstallTo = ''
 )
 $ErrorActionPreference = 'Stop'
 $Id = 'WAW'
@@ -181,6 +190,15 @@ $active = [byte[]]$terHead[8..15]                       # four 16-bit cell numbe
 if (-not $Ground) {
     $active = [byte[]](@(120, 120, 128, 128) | ForEach-Object { [BitConverter]::GetBytes([int16]$_) })
     $centre = -218, 133; $tiles = 5; $size = 64         # the floor: 5 x 5 blocks around where cp1's spawn path is
+    # (These blocks do nothing, and are left as they were first laid for the day that is understood.
+    # A soldier lifted 36 metres over them fell straight through to height 0 and stopped there: what
+    # the player stands on is level ground the game has everywhere at height 0, whether a world gives
+    # it terrain there or not. Three things were tried against it, to stop a bolt fired downwards
+    # bursting on it a few metres from the character, and none took: blocks of our own that only a
+    # soldier collides with, the terrain's heights sunk 300 metres, and the floor lifted 30. What
+    # did is further down: the burst itself is emptied.)
+    $stale = (Join-Path $proj "Worlds\$Id\msh\waw_floor.msh"), (Join-Path $proj "Worlds\$Id\odf\waw_floor.odf"), (Join-Path $proj 'Common\mshs\waw_floor.msh'), (Join-Path $proj 'Common\odfs\waw_floor.odf')
+    foreach ($file in $stale) { if (Test-Path -LiteralPath $file) { [IO.File]::Delete($file) } }
     $floor = ''; $n = 0
     for ($i = 0; $i -lt $tiles; $i++) {
         for ($j = 0; $j -lt $tiles; $j++) {
@@ -208,7 +226,35 @@ $fs = [IO.File]::Open($ter, 'Open', 'ReadWrite')
 try {
     $now = New-Object byte[] 8; [void]$fs.Seek(8, 'Begin'); [void]$fs.Read($now, 0, 8)
     if (-not [Linq.Enumerable]::SequenceEqual($now, $active)) { [void]$fs.Seek(8, 'Begin'); $fs.Write($active, 0, 8) }
+    # (The heights, a grid of 16-bit numbers after 2822 bytes of other things, are left at nothing as
+    # the template has them. A run of this script once sank them, to no purpose: this puts such a
+    # file back.)
+    $head = New-Object byte[] 184; [void]$fs.Seek(0, 'Begin'); [void]$fs.Read($head, 0, 184)
+    $cells = [BitConverter]::ToInt32($head, 176)
+    if ([BitConverter]::ToSingle($head, 164) -eq [single]0.01 -and $cells -eq 1024 -and $fs.Length -ge 2822 + 2 * $cells * $cells) {
+        $first = New-Object byte[] 2; [void]$fs.Seek(2822, 'Begin'); [void]$fs.Read($first, 0, 2)
+        if ([BitConverter]::ToInt16($first, 0) -ne 0) { $row = New-Object byte[] (2 * $cells); [void]$fs.Seek(2822, 'Begin'); for ($r = 0; $r -lt $cells; $r++) { $fs.Write($row, 0, $row.Length) } }
+    }
 } finally { $fs.Close() }
+
+# The burst. A bolt that hits something in this game goes off in orange sparks and a puff of smoke
+# (com_sfx_ord_exp, which every blaster's bolt names for whatever it hits and for when it gives out).
+# Nothing here is for a bolt to hit: what a shot hits is World at War's to decide and to show, at
+# the spot the middle of the screen is on. But this game has level ground under the player, and a
+# bolt fired downwards from behind the character met it a few metres out and went off there: a pace
+# to the left of World at War's crosshair and of the hit World at War showed, since the bolt flies
+# from beside the camera the way the character faces. The ground could not be got out of the way
+# (above), so the burst is emptied: its three kinds of particle are given none to make. It is our
+# copy of the effect that the game uses, because our ingame.lvl is read before the game's own and
+# the first of a name is the one kept. A bolt is then simply seen going, as it is at a wall.
+foreach ($fx in 'Common\effects\com_sfx_ord_exp.fx', 'Common\effects\PC\com_sfx_ord_exp.fx') {
+    $file = Join-Path $proj $fx
+    if (-not (Test-Path -LiteralPath $file)) { continue }
+    $text = $latin1.GetString([IO.File]::ReadAllBytes($file))
+    $none = [regex]::Replace($text, '(?m)^(\s*)(MaxParticles|BurstCount)\([^)]*\);', '$1$2(0.0000,0.0000);')
+    if ($none -notmatch 'MaxParticles\(0\.0000,0\.0000\);') { throw "$fx is not written the way this script expects" }
+    Write-IfChanged $file $none
+}
 "world: $(if ($Ground) { 'the template''s ground and sky' } else { 'nothing drawn; an invisible floor of ' + ($tiles * $tiles) + ' blocks' })"
 
 # The HUD. The picture laid over World at War is the player's character,
@@ -438,7 +484,7 @@ foreach ($o in $outputs.Keys) { if (Test-Path -LiteralPath $o) { '  built {0,12:
 if ($missing.Count) { throw "the munge did not produce everything; see $log and $build\munge_output.txt" }
 
 if (-not $NoInstall) {
-    $addon = Join-Path $GameData "addon\$Id"
+    $addon = if ($InstallTo) { $InstallTo } else { Join-Path $GameData "addon\$Id" }
     foreach ($o in $outputs.Keys) {
         $dest = Join-Path $addon $outputs[$o]
         $dir = Split-Path -Parent $dest

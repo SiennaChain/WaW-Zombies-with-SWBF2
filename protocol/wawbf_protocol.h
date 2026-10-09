@@ -23,10 +23,13 @@ namespace wawbf {
 
 constexpr uint32_t kMagic = 0x46425757;  // "WWBF" in memory
 constexpr uint32_t kMagicInitializing = 1;
-constexpr uint32_t kVersion = 12;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons; 5: camera; 6: kit; 7: weapon in hand, abilities; 8: weapon uses; 9: magazine, charge; 10: the thrown grenade; 11: and not; 12: who the character is
+constexpr uint32_t kVersion = 13;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons; 5: camera; 6: kit; 7: weapon in hand, abilities; 8: weapon uses; 9: magazine, charge; 10: the thrown grenade; 11: and not; 12: who the character is; 13: whether the player's hands are on the game
 constexpr const wchar_t* kMappingName = L"Local\\WaWBF_v1";
 constexpr uint32_t kMappingSize = 0x10000;  // 64 KiB; later phases add rings
 constexpr uint32_t kHeartbeatTimeoutMs = 2000;
+// A named object the launcher holds for as long as the games it started are
+// running. A bridge that does not find it does nothing (common/session.h).
+constexpr const wchar_t* kSessionName = L"Local\\WaWBF_session_v1";
 
 static_assert(std::atomic<uint32_t>::is_always_lock_free,
               "cross-process atomics must be lock-free");
@@ -110,6 +113,11 @@ enum WawFlags : uint32_t {
 
   kWawCrouching = 1u << 8,     // the player is crouched
   kWawSprinting = 1u << 9,     // the player is sprinting
+  // WaW is the window in front and not at its pause menu: a key or button
+  // the SWBF2 bridge watches for itself (the next character, first or third
+  // person) is meant for the game. Without it they are somebody typing in
+  // another window, or a controller going through WaW's menu.
+  kWawHandsOn = 1u << 10,
 };
 
 // What the player is holding down in WaW that belongs to SWBF2's side of the

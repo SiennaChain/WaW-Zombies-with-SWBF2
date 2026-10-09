@@ -33,8 +33,9 @@ inline bool WriteFloat3(uintptr_t address, const float v[3]) {
 uintptr_t FindRecordNamed(uintptr_t from, size_t size, const char* name);
 
 // Redirects the game exe's import of `name` from `dll` to `replacement`.
-// Returns the real function so the replacement can call through, or null if
-// the exe does not import it.
+// Returns what the exe was calling until now, for the replacement to call
+// through to (the real function, or whatever something else loaded into the
+// game had already put in its place), or null if the exe does not import it.
 void* PatchImport(const char* dll, const char* name, void* replacement);
 
 // Replaces one method of a COM object by overwriting its vtable slot, which

@@ -200,6 +200,7 @@ local arena = nil        -- the roster ArenaInit was given
 local chosen = { 1, 1 }  -- which of each team's characters the player is, or will be next
 local waiting = nil      -- { team =, place =, looks = } while the old unit goes away
 local playing = nil      -- the class the player was last put in the world as
+local first = nil        -- the team the player is first put in the world on, if the roster says who they start as (ArenaInit)
 
 -- Full health for the character in play, with its kit in it.
 local function FullHealth()
@@ -266,8 +267,13 @@ local function Look()
         return
     end
     local unit = GetCharacterUnit(character)
+    if unit then
+        first = nil
+    end
     if not unit then
-        local to = waiting or { team = team }
+        -- (The very first time, on the team of whoever the roster says the
+        -- player starts as, whichever team the game put them on.)
+        local to = waiting or { team = first or team }
         waiting = nil
         Appear(character, to.team, to.place)
     elseif waiting then
@@ -342,6 +348,20 @@ end
 function ArenaInit(roster)
 
     arena = roster
+
+    -- Who the player starts as, if the roster says (start = a class): that
+    -- character's team, and its place among that team's characters. Without
+    -- it, the first of team 1's.
+    if roster.start then
+        for team = ATT, DEF do
+            for place, class in ipairs(roster.teams[team].classes) do
+                if class == roster.start then
+                    first = team
+                    chosen[team] = place
+                end
+            end
+        end
+    end
 
     -- No "pick a team" screen: the player starts on team 1 and changes side,
     -- like character, by asking.

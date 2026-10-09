@@ -56,8 +56,11 @@ struct Settings {
   uint32_t fittedPad = 0;
   std::vector<CodeChange> scoreboardAlone;  // what makes the scores button bring up the scoreboard in a game played alone
   std::vector<CodeChange> quietRename;      // and what keeps "... renamed to ..." off the screen when the bridge changes the player's name
+  std::vector<CodeChange> marksFromBehind;  // and what has the marks of the player's shots, from behind, land where the shots do (Aim)
   AddressSpec console;          // the game's routine that takes a line for its console
   bool haveConsole = false;
+  std::string runningSetting;   // "sv_running": on while the game is in a map, loading it included
+  bool quitAtMenu = false;      // close the game if it comes back to its main menu
   AddressSpec playerName;       // the player's name as the game has it (text), for putting back
   bool havePlayerName = false;
   std::vector<std::pair<int, std::string>> characterNames;  // SWBF2's number for a character, and the name the player goes by as them
@@ -67,6 +70,7 @@ struct Settings {
   AddressSpec playerFlags;      // the player entity's switches, one of which is what "god" in the console turns on and off
   bool havePlayerFlags = false;
   bool godAtStart = false;      // [debug] god_at_start: the player begins each map with that one on
+  std::string consoleLine;      // [debug] console_line: given to the game's console once, each time it is changed
   AddressSpec drawGun;  // the byte behind cg_drawGun
   bool haveDrawGun = false;
   AddressSpec viewOrigin, viewAxis;  // where the game is drawing from: 3 floats, and 9 (forward, left, up)
@@ -198,7 +202,10 @@ Settings LoadSettings(const Config& config) {
   s.fittedPad = static_cast<uint32_t>(config.GetInt("waw", "fitted_pad", 0));
   s.scoreboardAlone = LoadChanges(config, "scoreboard_alone");
   s.quietRename = LoadChanges(config, "quiet_rename");
+  s.marksFromBehind = LoadChanges(config, "marks_from_behind");
   s.haveConsole = config.GetAddress("waw", "console", s.console);
+  s.runningSetting = config.GetString("waw", "running_setting");
+  s.quitAtMenu = config.GetInt("waw", "quit_at_menu", 0) != 0;
   s.havePlayerName = config.GetAddress("waw", "player_name", s.playerName);
   // "1 = Han Solo, 2 = Clone Trooper": a character's number, and their name
   const std::string names = config.GetString("waw", "character_names");
@@ -217,6 +224,7 @@ Settings LoadSettings(const Config& config) {
   s.playerHealth = config.GetInt("waw", "player_health", 0);
   s.havePlayerFlags = config.GetAddress("waw", "player_flags", s.playerFlags);
   s.godAtStart = config.GetInt("debug", "god_at_start", 0) != 0;
+  s.consoleLine = config.GetString("debug", "console_line");
   s.haveDrawGun = config.GetAddress("waw", "draw_gun", s.drawGun);
   s.haveView = config.GetAddress("waw", "view_origin", s.viewOrigin) &&
                config.GetAddress("waw", "view_axis", s.viewAxis);
@@ -304,7 +312,11 @@ SharedBlock* g_block = nullptr;  // guarded by g_mutex; set once the mapping is 
 WawPlayerState g_state{};        // guarded by g_mutex; the last state published
 bool g_fromBehind = false;       // guarded by g_mutex; this game is being drawn from behind the player
 bool g_handsBusy = false;        // guarded by g_mutex; the scripts say the player's hands are doing something of WaW's own
+bool g_gameOver = false;         // guarded by g_mutex; the scripts say the game is over
+bool g_unseen = false;           // guarded by g_mutex; nothing of SWBF2's is to be seen just now (Unseen)
+std::atomic<bool> g_playing{false};        // the player is in the map and the game is running, not paused (Unseen; for the bridge's own thread)
 float g_aimFar = 0;              // guarded by g_mutex; how far along the line through the middle of the screen the first thing is, in units (from the scripts); 0 = nothing to aim
+float g_look[2] = {0, 0};        // guarded by g_mutex; the way the player looks, pitch and yaw, as the game has it (Publish, for Aim)
 std::atomic<uint32_t> g_frames{0};
 std::atomic<bool> g_crouched{false};       // the player is crouched (for SteadyHead, which runs on the game's own thread)
 std::atomic<int> g_headEntityOrigin{0x24};
@@ -317,6 +329,77 @@ bool AnyHeld(const std::vector<AddressSpec>& places) {
     if (address && mem::Read(address, &held, sizeof(held)) && held) return true;
   }
   return false;
+}
+
+// What the player presses is meant for the game: WaW is the window in front,
+// and it is not at its pause menu. Everything the bridges read for themselves
+// off a key or a controller (the next ability, the next character, first or
+// third person) counts only then. Up and down on the d-pad are the next
+// character, and they are also how a controller moves through the pause menu:
+// a player going down that menu to its options went through two characters on
+// the way, unseen.
+bool HandsOn(const Settings& s) {
+  DWORD foreground = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &foreground);
+  if (foreground != GetCurrentProcessId()) return false;
+  uint8_t paused = 0;
+  const uintptr_t pausedAt = s.havePaused ? mem::Resolve(s.paused) : 0;
+  if (pausedAt) mem::Read(pausedAt, &paused, sizeof(paused));
+  return paused == 0;
+}
+
+// Nothing of SWBF2's is to be seen: not the character, not its weapon, not
+// its HUD. Two times.
+//
+// Before the player is in the map and playing. SWBF2 is running, with a
+// character standing in its arena, from before this game is started, so its
+// picture is there to be drawn from this game's first frame: over the film
+// the game shows while a map loads (Nacht der Untoten's is its opening
+// scene), and the character stood in front of that for as long as the loading
+// took. The film goes on over a paused game once the player is in the map, so
+// "in the map" is not enough either: in the map and not paused, for a third
+// of a second together, the first time. (After that a pause is the pause
+// menu, which the picture stands aside for by itself and comes straight back
+// from.) "In the map" is the player's own record being there, which is where
+// their name is read from.
+//
+// And when the game is over, which the scripts say (HearScripts): from the
+// player's death until the level starts again.
+//
+// The picture is not switched off for either, only kept from being drawn
+// (overlay::SetStandAside): everything that goes by "SWBF2's picture is
+// arriving" stays as it is. Call with g_mutex held.
+bool Unseen(bool paused) {
+  static bool arrived = false, was = false;
+  static DWORD since = 0;
+  const Settings& s = g_settings;
+  char name = 0;
+  const uintptr_t at = s.havePlayerName ? mem::Resolve(s.playerName) : 0;
+  const bool inMap = !s.havePlayerName || (at && mem::Read(at, &name, 1) && name);
+  if (!inMap) {
+    arrived = false;
+    since = 0;
+  } else if (!arrived) {
+    const DWORD now = GetTickCount();
+    // (`since` can be a thousandth of a second ahead of `now`, being kept
+    // from ever being zero: hence the signed difference.)
+    if (paused) {
+      since = 0;
+    } else if (!since) {
+      since = now | 1;
+    } else if (static_cast<int32_t>(now - since) >= 330) {
+      arrived = true;
+    }
+  }
+  g_playing.store(arrived && !paused, std::memory_order_relaxed);
+  const bool unseen = !arrived || g_gameOver;
+  if (unseen != was && overlay::Drawing()) {
+    log::Info(unseen ? (g_gameOver ? "unseen: the game is over; nothing of SWBF2's is drawn until the level starts again"
+                                   : "unseen: nothing of SWBF2's is drawn until the player is in the map and playing")
+                     : "unseen: no longer");
+  }
+  was = unseen;
+  return unseen;
 }
 
 // The buttons that belong to SWBF2's side of the game, as they are held now.
@@ -352,8 +435,8 @@ uint32_t HeldButtons(const Settings& s) {
   }
   // "The next ability" is nothing WaW has an action for, so there is no
   // record of it to read: the key and the controller are looked at directly.
-  if (inFront && ((s.nextAbilityKey && (GetAsyncKeyState(s.nextAbilityKey) & 0x8000) != 0) ||
-                  (s.nextAbilityPad && (pad::Buttons() & s.nextAbilityPad) != 0))) {
+  if (HandsOn(s) && ((s.nextAbilityKey && (GetAsyncKeyState(s.nextAbilityKey) & 0x8000) != 0) ||
+                     (s.nextAbilityPad && (pad::Buttons() & s.nextAbilityPad) != 0))) {
     held |= kWawButtonNextAbility;
   }
   // A jump is passed on only when it is one: pressed while the player stands
@@ -439,7 +522,9 @@ const uint32_t kHidden = 0x20;
 void ThirdPerson() {
   static bool on = false;
   BfPlayerState bf{};
-  const bool want = g_block && overlay::Drawing() && g_block->bf.read(bf) && (bf.flags & kBfThirdPerson) != 0;
+  // (Nor while nothing of SWBF2's is to be seen: the game is over, and the
+  // view is the game's own to move round the map.)
+  const bool want = g_block && !g_unseen && overlay::Drawing() && g_block->bf.read(bf) && (bf.flags & kBfThirdPerson) != 0;
   if (!g_settings.haveThirdPerson || (!want && !on)) return;
   const uintptr_t setting = mem::Resolve(g_settings.thirdPerson);
   if (!setting) return;  // the game has not made the setting yet
@@ -526,9 +611,7 @@ void TellKit() {
   // nothing the bridge can reach hides that on a PC; so the action is left
   // idle, and the key and the controller button are looked at directly, as
   // for "the next ability", while WaW is the window in front.
-  DWORD foreground = 0;
-  GetWindowThreadProcessId(GetForegroundWindow(), &foreground);
-  const bool fitted = have && foreground == GetCurrentProcessId() &&
+  const bool fitted = have && HandsOn(g_settings) &&
                       ((g_settings.fittedKey && (GetAsyncKeyState(g_settings.fittedKey) & 0x8000) != 0) ||
                        (g_settings.fittedPad && (pad::Buttons() & g_settings.fittedPad) != 0));
   const int32_t says = !have ? 0
@@ -557,14 +640,26 @@ void TellKit() {
 // with all of it. Above those, eleven bits of how far along the line through
 // the middle of the screen the first thing is, in steps of 2 units (0: nothing
 // to aim, or not from behind), which is for Aim.
+//
+// And one thing no weapon says: busy hands with 255 rounds in a magazine that
+// holds none. That is the scripts saying the game is over (the player is
+// dead, GAME OVER is on the screen, and then the view goes round the map
+// until the level starts again): nothing of SWBF2's is to be seen (Unseen).
+const int32_t kGameOverSaid = 3 | (255 << 4);
 
 void HearScripts(const Settings& s, WawPlayerState& next) {
   next.weapon = next.clip = next.clipSize = 0;
   g_aimFar = 0;
   g_handsBusy = false;
+  g_gameOver = false;
   int32_t says = 0;
   const uintptr_t address = s.haveScriptsSay ? mem::Resolve(s.scriptsSay) : 0;
   if (!address || !mem::Read(address, &says, sizeof(says)) || says < 0) return;
+  if ((says & 0xFFFFF) == kGameOverSaid) {
+    g_gameOver = true;
+    next.buttons &= ~static_cast<uint32_t>(kWawButtonFire | kWawButtonAim | kWawButtonAbility | kWawButtonReload | kWawButtonNextAbility);
+    return;
+  }
   g_aimFar = static_cast<float>((says >> 20) & 0x7FF) * 2.0f;
   next.weapon = static_cast<uint32_t>(says & 3);
   // 3 is neither weapon: the player's own hands are busy with something of
@@ -754,8 +849,11 @@ bool ChangeCode(const std::vector<CodeChange>& changes, const char* key, Changes
 }
 
 void ScoreboardAlone(const Settings& s) {
-  static ChangesMade scoreboard, rename;
-  const bool had = scoreboard.done, hadQuiet = rename.done;
+  static ChangesMade scoreboard, rename, marks;
+  const bool had = scoreboard.done, hadQuiet = rename.done, hadMarks = marks.done;
+  if (ChangeCode(s.marksFromBehind, "marks_from_behind", marks) && !hadMarks) {
+    log::Info("aim: from behind the character, the marks the player's shots leave are where the shots go");
+  }
   if (ChangeCode(s.scoreboardAlone, "scoreboard_alone", scoreboard) && !had) {
     log::Info("scores: played alone, the scores button brings up the scoreboard a co-op game has (%zu changes to the game's code)", s.scoreboardAlone.size());
   }
@@ -785,10 +883,73 @@ void Console(uintptr_t routine, const char* text) {
 // is changed the way the player could change it: "name ..." in the console.
 // The game does the rest (it tells its own server half, which tells
 // everything that shows names). What the player was called before is read
-// from the game first and put back when SWBF2 goes away.
+// from the game first and put back when SWBF2 goes away, and when the game
+// is told to quit (QuitAtMenu).
+//
+// The game also writes the name into the player's own settings, at once, as
+// it does any change of it: so a game that ends any other way than those two
+// (its window closed, a crash) would leave the player called Darth Vader in
+// every game of World at War from then on. Against that the name they had is
+// kept in a file beside the bridge from the first time they go by another,
+// and the launcher, which is there until the game has gone however it goes,
+// then sees to it that the game's settings say that name, and takes the file
+// away (tools/launcher/main.cpp, GiveNameBack).
+uint32_t g_named = 0;      // who the player is called after now; 0: themselves
+std::string g_ownName;     // what they were called before
+std::wstring g_nameKept;   // the file that is kept in
+
+void KeepOwnName(const std::string& name) {
+  // Learnt once in a game and never again. What the game says the player is
+  // called is only their own name the first time it is asked: after that it
+  // may be a character's, and still is for a frame or two after the player's
+  // own has been asked for back (the name goes round through the game's
+  // server half before it shows). Asked again at each change of character,
+  // as this first was, the "own" name soon became whichever character had
+  // just been left, and that is what the player's settings were left with.
+  if (!g_ownName.empty()) return;
+  // One left from a game that ended badly is the name to go back to, not the
+  // character's name the game has now.
+  char kept[33] = {};
+  DWORD size = 0;
+  HANDLE file = CreateFileW(g_nameKept.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    ReadFile(file, kept, sizeof(kept) - 1, &size, nullptr);
+    CloseHandle(file);
+    if (size) {
+      g_ownName.assign(kept, size);
+      return;
+    }
+  }
+  g_ownName = name;
+  file = CreateFileW(g_nameKept.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    WriteFile(file, name.data(), static_cast<DWORD>(name.size()), &size, nullptr);
+    CloseHandle(file);
+  }
+}
+
+// Nothing that would end a name early or begin another command.
+std::string NameLine(std::string name) {
+  name.erase(std::remove_if(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == '"' || c == ';' || c == '\\'; }), name.end());
+  return name.empty() ? name : "name \"" + name + "\"\n";
+}
+
+// The player's own name back, if they are going by another. Only with the
+// console known to be safe to call (a player has been in a map). The file
+// that keeps the name stays: the launcher takes it away once the game has
+// gone, after seeing that the game's settings really do say that name (a
+// game told to quit in the same breath may not have got round to it).
+void OwnNameBack(uintptr_t console) {
+  if (!g_named) return;
+  const std::string line = NameLine(g_ownName);
+  if (!line.empty()) {
+    Console(console, line.c_str());
+    log::Info("name: the player is called %s again", g_ownName.c_str());
+  }
+  g_named = 0;
+}
+
 void NameCharacter(const Settings& s, const SharedBlock* block, bool swbf2Alive) {
-  static uint32_t named = 0;
-  static std::string before;
   const uintptr_t console = s.haveConsole ? mem::Resolve(s.console) : 0;
   if (!console || s.characterNames.empty() || !block) return;
   // Only with a player in a map. The place the name is read from is reached
@@ -799,27 +960,62 @@ void NameCharacter(const Settings& s, const SharedBlock* block, bool swbf2Alive)
   char was[33] = {};
   const uintptr_t at = s.havePlayerName ? mem::Resolve(s.playerName) : 0;
   if (!at || !mem::Read(at, was, sizeof(was) - 1) || !was[0]) return;
+  // Nor before the player is playing: in the map with the game running
+  // (Unseen). A name asked for the moment the player's record appeared, with
+  // the game about to pause under its "click to start" screen, changed the
+  // game's setting and never reached the half of the game that shows names:
+  // the scripts went on seeing the player's own for as long as they kept that
+  // character.
+  if (!g_playing.load(std::memory_order_relaxed)) return;
+  static std::string wanted;
+  static DWORD askedAt = 0;
+  static int again = 0;
   BfPlayerState bf{};
   const uint32_t who = swbf2Alive && block->bf.read(bf) ? bf.who : 0;
-  if (who == named) return;
-  std::string name;
-  if (who) {
-    for (const auto& one : s.characterNames) {
-      if (one.first == static_cast<int>(who)) name = one.second;
+  // A change of character goes through "nobody" for a few tenths of a second
+  // (the old unit has gone and the new one is not there yet). That is not
+  // SWBF2 going away: the player keeps the name they have until there has
+  // been nobody for two seconds together.
+  static DWORD nobodySince = 0;
+  if (!who) {
+    if (!g_named) return;
+    const DWORD now = GetTickCount();
+    if (!nobodySince) nobodySince = now | 1;
+    if (static_cast<int32_t>(now - nobodySince) < 2000) return;  // (signed: see Unseen)
+    nobodySince = 0;
+    return OwnNameBack(console);
+  }
+  nobodySince = 0;
+  if (who == g_named) {
+    // Asked for, and three seconds on the game still has the player by
+    // another name: it is asked again (twice at most; a name the game cuts
+    // short would otherwise be asked for for ever). By way of the player's
+    // own name, because asking for the name the game's setting already holds
+    // changes nothing, and then nothing is sent on.
+    const DWORD now = GetTickCount();
+    if (again < 2 && !wanted.empty() && now - askedAt > 3000 && wanted != was) {
+      ++again;
+      askedAt = now;
+      Console(console, (NameLine(g_ownName) + NameLine(wanted)).c_str());
+      log::Info("name: the game still had the player as %s; %s is asked for again", was, wanted.c_str());
     }
-    if (name.empty()) return;  // nobody the settings have a name for: the player keeps the one they have
-    if (!named) before = was;
-  } else {
-    name = before;
+    return;
   }
-  // Nothing that would end the name early or begin another command.
-  name.erase(std::remove_if(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == '"' || c == ';' || c == '\\'; }), name.end());
-  if (!name.empty()) {
-    const std::string line = "name \"" + name + "\"\n";
+  std::string name;
+  for (const auto& one : s.characterNames) {
+    if (one.first == static_cast<int>(who)) name = one.second;
+  }
+  if (name.empty()) return;  // nobody the settings have a name for: the player keeps the one they have
+  if (!g_named) KeepOwnName(was);
+  const std::string line = NameLine(name);
+  if (!line.empty()) {
     Console(console, line.c_str());
-    log::Info("name: the player is called %s%s", name.c_str(), who ? "" : " again");
+    log::Info("name: the player is called %s", name.c_str());
+    wanted = line.substr(6, line.size() - 8);  // as it was asked for: between name " and "
+    askedAt = GetTickCount();
+    again = 0;
   }
-  named = who;
+  g_named = who;
 }
 
 // More for the player to take: 200 where the game gives 100, so that a
@@ -868,6 +1064,24 @@ void MoreHealth(const Settings& s) {
 // nothing typed into the console could turn it off.)
 const uint32_t kGodSwitch = 0x1, kSeenSwitch = 0x40000000;
 
+// [debug] console_line: whatever it says is given to the game's console, once,
+// each time the line is changed (wawbf.ini is read again whenever it is
+// saved). For trying something in a game whose own console cannot be reached:
+// it fills the screen, or nobody is at the keyboard. Only with a player in a
+// map, like everything else the console is given.
+void ConsoleLine(const Settings& s) {
+  static std::string given;
+  if (s.consoleLine == given) return;
+  const uintptr_t console = s.haveConsole ? mem::Resolve(s.console) : 0;
+  char name[2] = {};
+  const uintptr_t at = s.havePlayerName ? mem::Resolve(s.playerName) : 0;
+  if (!console || !at || !mem::Read(at, name, 1) || !name[0]) return;
+  given = s.consoleLine;
+  if (given.empty()) return;
+  log::Info("[debug] console_line: %s", given.c_str());
+  Console(console, (given + "\n").c_str());
+}
+
 void GodAtStart(const Settings& s) {
   if (!s.godAtStart || !s.havePlayerFlags) return;
   const uintptr_t at = mem::Resolve(s.playerFlags);
@@ -897,7 +1111,19 @@ void Publish() {
   }
   if (s.haveAngles && mem::ReadFloat3(mem::Resolve(s.angles), next.viewAngles)) {
     next.flags |= kWawAnglesValid;
+    g_look[0] = next.viewAngles[0];
+    g_look[1] = next.viewAngles[1];
   }
+  // (From behind, SWBF2's character goes on facing and aiming the way the
+  // player looks, though the shot itself is pointed a little to the camera's
+  // side of that, at whatever the middle of the screen shows (Aim). Telling
+  // the character to aim there too was tried, to have its bolts cross the
+  // same spot, and was wrong. Nothing in SWBF2's world stops a bolt: it flies
+  // on through WaW's walls, and what the eye follows is the streak running
+  // away into the distance. Fired the way the player looks, which is the way
+  // the camera looks, that streak runs to the middle of the screen. Fired at
+  // a spot two metres off, it crosses the spot and runs on to one side: "too
+  // far right", as the user had it within a minute.)
   // Two tangents; anything outside a sane lens means the address is wrong.
   float fov[2];
   if (s.haveFov && mem::Read(mem::Resolve(s.fov), fov, sizeof(fov)) && fov[0] > 0.05f &&
@@ -906,6 +1132,7 @@ void Publish() {
     next.tanHalfFov[1] = fov[1];
     next.flags |= kWawFovValid;
   }
+  if (HandsOn(s)) next.flags |= kWawHandsOn;
   next.buttons = s.forwardButtons ? HeldButtons(s) : 0;
   HearScripts(s, next);
   ReadPosture(s, next);
@@ -1010,6 +1237,39 @@ uintptr_t ValueOf(NamedSetting& setting, const std::string& name) {
   }
   log::Info("settings: the game keeps %s at 0x%08lX", name.c_str(), static_cast<unsigned long>(setting.record));
   return setting.record + 0x10;
+}
+
+// No main menu. The player starts a map from the launcher (tools/launcher),
+// which starts this game straight into it; the game's own menus are no way
+// to choose one, since each map has its own build of the mod. So if the game
+// is ever at its main menu after having been in a map (the player left the
+// map from the pause menu), it is told to quit, as "quit" typed into its
+// console would. "In a map" is the game's own setting sv_running, which is
+// on from the moment a map begins to load until it is left.
+void QuitAtMenu(const Settings& s) {
+  static NamedSetting setting;
+  static bool wasRunning = false, asked = false;
+  static DWORD stoppedAt = 0;
+  const uintptr_t console = s.haveConsole ? mem::Resolve(s.console) : 0;
+  if (!s.quitAtMenu || s.runningSetting.empty() || !console || asked) return;
+  const uintptr_t at = ValueOf(setting, s.runningSetting);
+  uint8_t running = 0;
+  if (!at || !mem::Read(at, &running, sizeof(running))) return;
+  if (running) {
+    wasRunning = true;
+    stoppedAt = 0;
+    return;
+  }
+  if (!wasRunning) return;  // still starting up: no map yet
+  const DWORD now = GetTickCount();
+  if (!stoppedAt) {
+    stoppedAt = now | 1;
+  } else if (now - stoppedAt > 3000) {
+    asked = true;
+    log::Info("menu: the game has left its map for the main menu; it is told to quit");
+    OwnNameBack(console);  // first: what it is called now is what it will be called next time
+    Console(console, "quit\n");
+  }
 }
 
 // One crosshair on screen, not two. SWBF2's picture has its own in it for a
@@ -1132,8 +1392,10 @@ void Aim() {
     overlay::SetMark(false, 0, 0);
     return;
   }
+  // (The way the player looks is g_look: what the game has, not what was
+  // published, which through the player's eyes is the camera's angles.)
   const float kDegrees = 3.14159265f / 180.0f;
-  const float pitch = s.viewAngles[0] * kDegrees, yaw = s.viewAngles[1] * kDegrees;
+  const float pitch = g_look[0] * kDegrees, yaw = g_look[1] * kDegrees;
   // the way the player looks, and what is to the right of that and above it
   const float ahead[3] = {std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), -std::sin(pitch)};
   const float right[3] = {std::sin(yaw), -std::cos(yaw), 0.0f};
@@ -1141,7 +1403,7 @@ void Aim() {
   const float eye[3] = {s.origin[0], s.origin[1], s.origin[2] + ((s.flags & kWawCrouching) ? 40.0f : 60.0f)};
   const auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
   const float* f = s.cameraForward;
-  float gun[2] = {s.viewAngles[0], s.viewAngles[1]};  // with nothing better known, the way the player looks
+  float gun[2] = {g_look[0], g_look[1]};  // with nothing better known, the way the player looks
   bool marked = false;
   const float along = dot(f, ahead);
   if (along > 0.5f) {
@@ -1221,17 +1483,23 @@ void BridgeFrame() {
     wasPaused = paused != 0;
     log::Info(wasPaused ? "paused: SWBF2's picture stands aside for the menu" : "paused: no longer");
   }
-  overlay::SetStandAside(knifing || paused != 0);
+  g_unseen = Unseen(paused != 0);
+  overlay::SetStandAside(knifing || paused != 0 || g_unseen);
   HideGun(knifing);
   ThirdPerson();
   TellKit();
 }
+
+const session::Game& BridgeGame() { return session::kWaw; }
+
+void BridgeLoaded(HMODULE, bool) {}
 
 void BridgeMain(HMODULE self) {
   const std::wstring dir = ModuleDir(self);
   log::Init(dir + L"wawbf_waw.log");
   log::Info("WaW bridge loaded (pid %lu)", GetCurrentProcessId());
   crashlog::Install();
+  g_nameKept = dir + L"wawbf_name.txt";
 
   Config config(dir + L"wawbf.ini");
   Settings settings = LoadSettings(config);
@@ -1292,6 +1560,8 @@ void BridgeMain(HMODULE self) {
       ShowHints(settings);
       ScoreboardAlone(settings);
       GodAtStart(settings);
+      ConsoleLine(settings);
+      QuitAtMenu(settings);
       if (config.Changed()) {
         log::Info("wawbf.ini changed, reloading");
         settings = LoadSettings(config);

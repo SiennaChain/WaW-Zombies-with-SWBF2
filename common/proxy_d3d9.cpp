@@ -5,6 +5,10 @@
 //
 // Set [proxy] chain = <path> in wawbf.ini to load another d3d9.dll (ReShade,
 // dgVoodoo, ...) instead of the system one.
+//
+// The games load it every time they start, whatever for. It only does more
+// than forward when the launcher started the game and the exe is the build
+// the bridge was made for: see session.h.
 #include <windows.h>
 
 #include <string>
@@ -21,6 +25,10 @@
 namespace {
 
 HMODULE g_self = nullptr;
+// Whether the bridge runs at all in this process (session.h). Settled once,
+// as the game loads this DLL; while it is false every export below does
+// nothing but call the real one.
+bool g_live = false;
 
 // --- once-per-frame callback -------------------------------------------------
 // The game hands each finished frame to Direct3D from its own rendering
@@ -156,7 +164,7 @@ void* WINAPI Direct3DCreate9(UINT sdkVersion) {
   using Fn = void*(WINAPI*)(UINT);
   auto fn = Real<Fn>("Direct3DCreate9");
   void* d3d = fn ? fn(sdkVersion) : nullptr;
-  if (d3d) {
+  if (d3d && g_live) {
     if (void* previous = wawbf::mem::PatchVtable(d3d, kCreateDevice, &CreateDeviceHook)) {
       g_realCreateDevice = reinterpret_cast<CreateDeviceFn>(previous);
     }
@@ -215,8 +223,17 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     g_self = instance;
     DisableThreadLibraryCalls(instance);
-    // Only start a thread here; everything else runs on it, outside the
-    // loader lock.
+    const std::wstring ini = wawbf::ModuleDir(instance) + L"wawbf.ini";
+    g_live = wawbf::session::Decide(wawbf::BridgeGame(), ini) == wawbf::session::Verdict::kRun;
+    wawbf::BridgeLoaded(instance, g_live);
+    if (!g_live) return TRUE;
+    // [window] dpi_aware = 1: the game is told the screen's real size, where
+    // Windows would otherwise tell an old game a smaller one and stretch its
+    // picture to fit. It only counts if it is said before the game makes its
+    // first window, which is why it is said here and not on the thread.
+    if (GetPrivateProfileIntW(L"window", L"dpi_aware", 0, ini.c_str()) != 0) SetProcessDPIAware();
+    // Otherwise only start a thread here; everything else runs on it, outside
+    // the loader lock.
     if (HANDLE thread = CreateThread(nullptr, 0, BridgeThread, nullptr, 0, nullptr)) {
       CloseHandle(thread);
     }

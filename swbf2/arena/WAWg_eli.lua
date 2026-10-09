@@ -31,6 +31,9 @@ end
 function ScriptInit()
     ArenaInit{
         era = "both",
+        -- The player starts as a stormtrooper (asked for): a soldier with a
+        -- rifle to begin with, and the heroes and villains a button away.
+        start = "imp_inf_rifleman",
         sides = {
             { "all", { "all_hero_luke_jedi", "all_hero_hansolo_tat", "all_hero_leia", "all_hero_chewbacca" } },
             { "imp", { "imp_hero_darthvader", "imp_hero_emperor", "imp_hero_bobafett", "imp_inf_rifleman" } },

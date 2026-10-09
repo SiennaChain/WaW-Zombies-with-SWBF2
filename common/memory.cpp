@@ -92,10 +92,26 @@ void* PatchImport(const char* dll, const char* name, void* replacement) {
   for (auto* desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress);
        desc->Name; ++desc) {
     if (_stricmp(reinterpret_cast<const char*>(base + desc->Name), dll) != 0) continue;
-    for (auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + desc->FirstThunk);
-         thunk->u1.Function; ++thunk) {
-      if (reinterpret_cast<void*>(thunk->u1.Function) != target) continue;
-      return WriteSlot(reinterpret_cast<void**>(&thunk->u1.Function), replacement) ? target : nullptr;
+    // The slot is found by the name the exe asks for, where it keeps its list
+    // of them, and only failing that by what is in the slot: something else
+    // loaded into the game may have put a routine of its own there already,
+    // and then it is that routine ours has to call on to.
+    auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + desc->FirstThunk);
+    auto* asked = desc->OriginalFirstThunk ? reinterpret_cast<IMAGE_THUNK_DATA*>(base + desc->OriginalFirstThunk) : nullptr;
+    for (; thunk->u1.Function; ++thunk) {
+      bool found = reinterpret_cast<void*>(thunk->u1.Function) == target;
+      if (asked) {
+        if (!asked->u1.AddressOfData) break;
+        if (!found && !IMAGE_SNAP_BY_ORDINAL(asked->u1.Ordinal)) {
+          const auto* by = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + asked->u1.AddressOfData);
+          found = std::strcmp(reinterpret_cast<const char*>(by->Name), name) == 0;
+        }
+        ++asked;
+      }
+      if (!found) continue;
+      void* previous = reinterpret_cast<void*>(thunk->u1.Function);
+      if (previous == replacement) return nullptr;
+      return WriteSlot(reinterpret_cast<void**>(&thunk->u1.Function), replacement) ? previous : nullptr;
     }
   }
   return nullptr;

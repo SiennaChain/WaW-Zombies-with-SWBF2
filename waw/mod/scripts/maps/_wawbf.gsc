@@ -270,7 +270,12 @@ init()
 	level.wawbf_controls_x = 6;
 	level.wawbf_controls_y = 30;
 	level.wawbf_controls_line = 13;
-	level.wawbf_controls_settle = 0.5;
+	level.wawbf_controls_settle = 1;
+
+	// What the bridge is told when the game is over, in place of what the
+	// player is carrying (follow_kit): busy hands and 255 rounds in a magazine
+	// that holds none, which no weapon says. The bridge has to agree with it.
+	level.wawbf_game_over = 3 + 255 * 16;
 
 	names = GetArrayKeys( level.wawbf_endless );
 	for( i = 0; i < names.size; i++ )
@@ -476,6 +481,17 @@ follow_kit()
 		used = int( says / 1024 ) % 128;
 		swung = int( says / 131072 ) % 128;
 		charge = ( int( says / 16777216 ) % 16 ) / 15;
+
+		// The game is over: the player is dead, GAME OVER is on the screen,
+		// and then the view goes round the map until the level starts again
+		// (the game sets level.intermission the moment the last player goes
+		// down for good). The character is not to stand in front of any of
+		// that, and the bridge is told so.
+		if( IsDefined( level.intermission ) && level.intermission )
+		{
+			self.dmg = level.wawbf_game_over;
+			continue;
+		}
 
 		if( !IsDefined( level.wawbf_kit[want] ) )
 		{

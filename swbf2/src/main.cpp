@@ -151,6 +151,8 @@ struct Settings {
   bool hidden = false;
   bool soundInBackground = true;  // [swbf2] sound_in_background: the game is heard while another window is in front
   bool devicesInBackground = false;  // [swbf2] devices_in_background: and whether it goes on reading the keyboard and controller then
+  bool pointerInBackground = false;  // [swbf2] pointer_in_background: and whether it goes on putting the pointer in the middle of its window then
+  bool startFromBehind = false;      // [swbf2] start_from_behind: the view is put in third person once, when the first character appears
   bool forwardFire = false;      // pull this game's trigger when the WaW player pulls theirs
   ValueSpec asks[kAsks];         // what to write to ask the mission script for each of kAskNames
   int askKeys[kAsks] = {};       // and the key that asks (a Windows virtual-key code)
@@ -280,6 +282,8 @@ Settings LoadSettings(const Config& config) {
   s.hidden = config.GetInt("swbf2", "hidden", 0) != 0;
   s.soundInBackground = config.GetInt("swbf2", "sound_in_background", 1) != 0;
   s.devicesInBackground = config.GetInt("swbf2", "devices_in_background", 0) != 0;
+  s.pointerInBackground = config.GetInt("swbf2", "pointer_in_background", 0) != 0;
+  s.startFromBehind = config.GetInt("swbf2", "start_from_behind", 0) != 0;
   s.forwardFire = config.GetInt("swbf2", "forward_fire", 0) != 0;
   s.functions.fire = config.GetInt("swbf2", "fire_function", s.functions.fire);
   s.functions.aim = config.GetInt("swbf2", "aim_function", s.functions.aim);
@@ -940,11 +944,11 @@ void ForwardButtons(SharedBlock* block) {
 }
 
 // Puts the game's view behind the character if it is not there.
-void ShowFromBehind(const Settings& s) {
+void ShowFromBehind(const Settings& s, const char* why = "a lightsaber is shown from behind") {
   const uintptr_t address = s.thirdPerson.type ? mem::Resolve(s.thirdPerson.address) : 0;
   double now = 0;
   if (!address || !ReadValue(s.thirdPerson, address, now) || SameValue(s.thirdPerson, now, s.thirdPerson.value)) return;
-  if (WriteValue(s.thirdPerson, address, s.thirdPerson.value)) log::Info("view: a lightsaber is shown from behind; changed to third person");
+  if (WriteValue(s.thirdPerson, address, s.thirdPerson.value)) log::Info("view: %s; changed to third person", why);
 }
 
 // What the unit has in hand: the place, among its weapons, of the weapon and
@@ -1262,6 +1266,25 @@ void BridgeFrame() {
   g_gameZoom = 0;  // the frame is over; the next one's camera says again
 }
 
+const session::Game& BridgeGame() { return session::kBf; }
+
+// The arena's add-on is in the game's folder whatever the game is started
+// for, and the game runs its script (swbf2/arena/addme.lua) every time. That
+// script goes straight into the arena only if it finds this file, which is
+// there for exactly as long as a game the launcher started is running: made
+// here, before the game has read anything, and taken away by the next start
+// that is not the launcher's. Started by itself, the game comes up at its
+// own menus as it always did, with the arena as one more map in its list.
+void BridgeLoaded(HMODULE self, bool live) {
+  const std::wstring flag = ModuleDir(self) + L"addon\\WAW\\wawbf_start.txt";
+  if (!live) {
+    DeleteFileW(flag.c_str());
+    return;
+  }
+  const HANDLE file = CreateFileW(flag.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+}
+
 void BridgeMain(HMODULE self) {
   const std::wstring dir = ModuleDir(self);
   log::Init(dir + L"wawbf_swbf2.log");
@@ -1275,6 +1298,8 @@ void BridgeMain(HMODULE self) {
   // And the player's keyboard and controller, which are World at War's while
   // that is the window in front, are not this game's to act on as well.
   if (!settings.devicesInBackground) devices::QuietInBackground();
+  // Nor is the pointer, nor the screen: before the game makes its window.
+  focus::Start(settings.hidden, settings.pointerInBackground);
   config.Changed();  // the load above is current; only later saves count
   // The picture for WaW (Phase 2), and the probe's own experiments. Publishing
   // needs the frame cut at the depth clear that comes before the first-person
@@ -1331,7 +1356,7 @@ void BridgeMain(HMODULE self) {
   DWORD lastReport = 0;
   for (;;) {
     shm.Beat();
-    focus::Tick(settings.keepRunning, settings.hidden);
+    focus::Tick(settings.keepRunning, settings.hidden, settings.pointerInBackground);
 
     const bool peerAlive = shm.PeerAlive();
     if (peerAlive != peerWasAlive) {
@@ -1369,17 +1394,23 @@ void BridgeMain(HMODULE self) {
       wasFollowing = following;
     }
 
-    // The key works whichever window has the keyboard: the player is in WaW.
+    // The keys and buttons are read whichever window has the keyboard: the
+    // player is in WaW. But only while WaW says they are playing it: not at
+    // its pause menu, which a controller moves through with the same d-pad,
+    // nor with some other window in front. (With no WaW there at all, this
+    // game being looked at by itself, they always count.)
+    WawPlayerState hands{};
+    const bool handsOn = !peerAlive || (shm.block()->waw.read(hands) && (hands.flags & kWawHandsOn) != 0);
     bool anyPad = settings.viewTogglePad != 0;
     for (int i = 0; i < kAsks; ++i) anyPad = anyPad || settings.askPads[i] != 0;
     const uint32_t padButtons = anyPad ? pad::Buttons() : 0;
-    const bool toggleKeyDown = settings.viewToggle.type &&
+    const bool toggleKeyDown = handsOn && settings.viewToggle.type &&
                                ((settings.viewToggleKey && (GetAsyncKeyState(settings.viewToggleKey) & 0x8000) != 0) ||
                                 (padButtons & static_cast<uint32_t>(settings.viewTogglePad)) != 0);
     if (toggleKeyDown && !toggleKeyWasDown) ApplyToggle(settings.viewToggle);
     toggleKeyWasDown = toggleKeyDown;
     for (int i = 0; i < kAsks; ++i) {
-      const bool down = settings.asks[i].type &&
+      const bool down = handsOn && settings.asks[i].type &&
                         ((settings.askKeys[i] && (GetAsyncKeyState(settings.askKeys[i]) & 0x8000) != 0) ||
                          (padButtons & static_cast<uint32_t>(settings.askPads[i])) != 0);
       if (down && !askKeyWasDown[i]) Ask(settings, i);
@@ -1434,6 +1465,15 @@ void BridgeMain(HMODULE self) {
     // A character with a lightsaber is always shown from behind. Anyone with
     // a weapon to aim is left in whichever view the player has chosen.
     if (melee && !thirdPerson && following) ShowFromBehind(settings);
+    // [swbf2] start_from_behind: a game begins from behind the character,
+    // whichever view this game was last left in (it remembers). Once, the
+    // first time there is a character to show: after that the view is the
+    // player's to change, and stays as they leave it.
+    static bool begun = false;
+    if (settings.startFromBehind && !begun && state.kit) {
+      begun = true;
+      if (!thirdPerson) ShowFromBehind(settings, "a game begins from behind the character");
+    }
     float scale = settings.characterScale;
     for (const auto& kit : settings.characterScaleKits) {
       if (kit.first == static_cast<int>(state.kit)) scale = kit.second;
@@ -1478,8 +1518,11 @@ void BridgeMain(HMODULE self) {
       chargingSince = 0;
     } else if (hand.weaponInUse && !weaponWasInUse) {
       ++state.weaponUses;
+      // (A time kept from being zero by "| 1" can be a thousandth of a second
+      // ahead of `now`: every difference from one is taken signed, here and
+      // below. Taken unsigned, that thousandth is seven weeks.)
       state.weaponCharge = chargingSince && chargeFull > 0.05f
-                               ? std::min(1.0f, static_cast<float>(now - chargingSince) / (chargeFull * 1000.0f))
+                               ? std::min(1.0f, static_cast<float>(std::max<int32_t>(0, static_cast<int32_t>(now - chargingSince))) / (chargeFull * 1000.0f))
                                : 0.0f;
     }
     if (hand.weaponCharging) {
@@ -1516,7 +1559,7 @@ void BridgeMain(HMODULE self) {
           apartSince = 0;
         } else if (!apartSince) {
           apartSince = now | 1;
-        } else if (now - apartSince >= 150 && now - lastCrouchPress > 500) {
+        } else if (static_cast<int32_t>(now - apartSince) >= 150 && now - lastCrouchPress > 500) {
           lastCrouchPress = now;
           apartSince = 0;
           input::HoldFor(settings.crouchFunction, 3);
@@ -1545,14 +1588,16 @@ void BridgeMain(HMODULE self) {
       if (waw.flags & kWawSprinting) wawSprintedAt = now | 1;
       const bool fireHeld = (waw.buttons & kWawButtonFire) != 0;
       if (melee && !settings.saberSprint && settings.sprintAttack && settings.sprintFunction >= 0 && fireHeld && !fireWasHeld && !dashAt &&
-          wawSprintedAt && now - wawSprintedAt < 250) {
+          wawSprintedAt && static_cast<int32_t>(now - wawSprintedAt) < 250) {
         dashAt = now | 1;
         log::Info("sprint attack: WaW's player struck out of a sprint; sprinting here for the blow");
       }
       fireWasHeld = fireHeld;
       bool dashing = false;
       if (dashAt && melee) {
-        const DWORD since = now - dashAt;
+        // (Signed, as above: unsigned, a blow struck on an even thousandth of
+        // a second was over before it began, which was every other one.)
+        const DWORD since = static_cast<DWORD>(std::max<int32_t>(0, static_cast<int32_t>(now - dashAt)));
         dashing = since < static_cast<DWORD>(settings.sprintAttackLeadMs + settings.sprintAttackHoldMs);
         g_dashFire.store(!dashing ? 0 : since < static_cast<DWORD>(settings.sprintAttackLeadMs) ? -1 : 1, std::memory_order_relaxed);
         if (!dashing) dashAt = 0;
