@@ -803,6 +803,27 @@ projection of its own that never changes (x scale 1.7321 at 16:9). While the
 game is zoomed in the weapons are not drawn: it draws a scope over the whole
 screen then, and a corner of it showed in the rectangle.
 
+The game writes the name of a weapon beside it for a moment whenever the
+weapon in hand changes, so with every change of character, and the user
+asked for that to go. The names seen were not our block's (raised with the
+block, they were above the rectangle all along) but the game's own HUD's,
+which is still drawn underneath: its names begin 0.711 of the way down the
+screen, and the rectangle reached 0.745. So the block is raised a little
+further (`-HudLift` 0.207, where it was 0.17) and the rectangle with it, to
+end at 0.706. Our own block's two names (`player1weapon1name`,
+`player1weapon2name`) are put off the screen by the build as well, like the
+blocks that are not wanted.
+
+Moving the rectangle up let something else of the game's own HUD into the
+top of it: the player's points, with a star and what they just changed by
+("-8 -1"), which the game shows at the left whenever they change, and they
+change with every change of character (the old unit is killed to make way).
+That reaches down to 0.578. The rectangle now begins just under it
+(`hud_keep = 0, 0.582, 0.33, 0.706`): a band an eighth of the screen high
+that our block, at 0.585 to 0.702, just fills. With no room left above the
+weapons, the word for an overheated weapon is put beside them
+(`-OverheatAt 0.245, 0.598`).
+
 **The crosshair is SWBF2's**, in every view, for a character with something
 to aim. A second rectangle is kept, the middle of the picture
 (`[overlay] hud_middle`; `frameprobe::SetHudMiddle`, each of the HUD's draw
@@ -816,8 +837,9 @@ weapon that heats up instead, the heat. So it is on through the player's
 eyes too, in place of WaW's. A character with a lightsaber has none.
 
 The word that comes up when a weapon has overheated is a part of the HUD by
-itself, low in the middle of the screen. In the arena's HUD it is put just
-above the weapons, inside the first rectangle (`build.ps1`, `-OverheatAt`).
+itself, low in the middle of the screen. In the arena's HUD it is put by the
+weapons, inside the first rectangle (`build.ps1`, `-OverheatAt`): above them
+at first, beside them since the rectangle was drawn in.
 
 Not looked at yet: aiming through the eyes with a weapon that has a scope
 (Leia's pistol, the bowcaster, the droid's launcher). What shows then is the
@@ -1025,8 +1047,11 @@ weapon seen through the eyes ("Max Ammo!" comes up under them).
 
 Played alone, WaW has no scoreboard on Tab (or a controller's Back button):
 it shows "Mission Objectives", and zombies has none. The player's tally was
-first put there as objectives (`tally`): the round, their points, their
-kills, how often they went down. It still shows on the pause menu.
+first put there as objectives: the round, their points, their kills, how
+often they went down. That is gone again: with objectives to its name the
+game took the map for a mission and showed them at the top left as it
+began ("where it thinks its a mission", the user), and the scoreboard below
+does the job.
 
 The user then asked for the scoreboard "exactly how it is in multiplayer".
 The game has it, for co-op, and chooses between the two in its code by
@@ -1053,6 +1078,32 @@ through the game's own routine for a typed line (`[waw] console`,
 `CoDWaW.exe+0x194200`, which takes the text in `eax` and the player in
 `ecx`). What the player was called before is read first and put back when
 SWBF2 goes away. The game does not keep the name between runs.
+
+The game says "... renamed to ..." at the top left whenever a name changes,
+which was now every change of character, and the user asked for it to go.
+Where the game takes in a player's details and finds a new name
+(`CoDWaW.exe+0x27373D`) it says so unless the old name was empty; that jump
+is made to be taken always (`[waw] quiet_rename`, the same kind of change as
+`scoreboard_alone`). The name is still taken in.
+
+## The controls, the first time
+
+The first time the player is a character, that character's controls are at
+the top left of the screen for ten seconds (`show_controls`): its name, fire
+and aim (or the lightsaber), what its abilities are and which button uses
+them, and whichever of "next ability", the flamethrower and "change weapon"
+it has, then the change of character and of view. A button of WaW's own is
+written with the game's mark for "whatever is bound to this"
+(`[{+attack}]`), so it reads right for any bindings and either device; the
+ones the bridges watch for themselves are written as their settings have
+them.
+
+Who the character is, the script takes from the player's name: the bridge
+has just made it the character's, and it is the only thing that tells Luke
+from Obi-Wan, who share a kit. The name and the kit do not change in the
+same moment, so the pair has to stay as it is for half a second before it is
+believed. (For the same reason the bridge now changes the name as soon as
+SWBF2 says who it is, not on its once-a-second round.)
 
 ## SWBF2 and the player's keyboard and controller
 
@@ -1212,7 +1263,18 @@ logs while the user played:
 - the name on it is the character's: the WaW bridge's log has the player
   called Clone Trooper, Han Solo, Chewbacca, Luke Skywalker and Obi-Wan
   Kenobi as the user went through them, and a picture with the scores button
-  held reads "Obi-Wan Kenobi  50330  4  1".
+  held reads "Obi-Wan Kenobi  50330  4  1";
+- a character's controls come up the first time the player is them, and the
+  game no longer says a name has changed: pictures of the top left taken as
+  the user went through characters show "The Emperor" over "RT or Left Mouse
+  Lightsaber", "LT or RB or G  Force lightning, Force choke", "LB or X  Next
+  ability", and "Battle Droid" with "Y or 1  Change weapon", and no
+  "renamed to" (the game's marks for bindings are filled in as hoped);
+- nothing is written at the top left as a map starts but those controls (a
+  picture twenty seconds in), and neither a weapon's name nor the star and
+  points come up by SWBF2's weapons on a change of character (pictures from
+  0.2 s to 1.8 s after one, the block whole inside the rectangle where it
+  now is).
 
 Not yet checked (all built on 2026-10-09 and in the user's hands, none of it
 seen by me):

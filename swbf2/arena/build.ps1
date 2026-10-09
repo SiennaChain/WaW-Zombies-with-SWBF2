@@ -25,17 +25,22 @@
 # on its own.
 #
 # Of the HUD only the weapons and abilities are left, raised by -HudLift (a
-# part of the screen's height) to clear World at War's round number. -FullHud
-# keeps the game's own HUD where it is.
+# part of the screen's height) to clear World at War's round number, and by
+# enough that the block ends above where the game's own HUD, which is still
+# drawn underneath, writes a weapon's name (0.711 of the way down the screen).
+# -FullHud keeps the game's own HUD where it is.
 param(
     [string]$ModTools = 'C:\BF2_ModTools',
     [string]$GameData = 'E:\SteamLibrary\steamapps\common\Star Wars Battlefront II Classic\GameData',
     [ValidateSet('gcw', 'cw', 'heroes', 'none')][string]$AutoStart = 'gcw',
     [switch]$Ground,
-    [double]$HudLift = 0.17,
-    # Where the word that says a weapon has overheated goes (across, down; parts of the screen):
-    # above the weapons, inside what wawbf.ini's hud_keep leaves of the HUD.
-    [double[]]$OverheatAt = @(0.165, 0.572),
+    [double]$HudLift = 0.207,
+    # Where the word that says a weapon has overheated goes (its middle across, its top down;
+    # parts of the screen): beside the weapons, over the faint end of the upper one's bar,
+    # inside what wawbf.ini's hud_keep leaves of the HUD. (It was above them. There is no room
+    # there now: the game's own HUD shows the player's points just above where the block is,
+    # every time they change, and hud_keep begins below that.)
+    [double[]]$OverheatAt = @(0.245, 0.598),
     [switch]$FullHud,
     [switch]$Fresh,
     [switch]$NoInstall
@@ -237,17 +242,35 @@ if (-not $FullHud) {
                 $hudLines[$i] = '{0}Position({1}, {2:F6}, {3}, "Viewport")' -f $Matches[1], $Matches[2], ([double]$Matches[3] - $HudLift), $Matches[4]; $raised++
             } elseif ($block -eq 'player1weapon1overheat') {
                 # The word that comes up when a weapon has overheated. The game has it low in the
-                # middle of the screen; here it goes just above the weapons, inside the part of
-                # the HUD that is kept.
+                # middle of the screen; here it goes beside the weapons, inside the part of the
+                # HUD that is kept.
                 $hudLines[$i] = '{0}Position({1:F6}, {2:F6}, {3}, "Viewport")' -f $Matches[1], $OverheatAt[0], $OverheatAt[1], $Matches[4]; $moved++
             } else {
                 $hudLines[$i] = '{0}Position(-10.000000, -10.000000, {1}, "Viewport")' -f $Matches[1], $Matches[4]; $hidden++
             }
         }
     }
-    if ($raised -ne 1 -or $moved -ne 1 -or $hidden -lt 30) { throw "the HUD file is not laid out as this script expects (raised $raised, moved $moved, hidden $hidden)" }
+    # Inside the weapons' block, the name of a weapon, which the game writes beside it for a
+    # moment whenever the weapon in hand changes: so with every change of character, and the
+    # user asked for it to go. Two parts of the block, each with a place of its own within it;
+    # both are put off the screen like the rest. (The names the user saw were not these but
+    # the game's own HUD's, lower down, showing through the part of the picture that is kept:
+    # that is what -HudLift and hud_keep now clear. These would have been next.)
+    $unnamed = 0
+    foreach ($name in 'player1weapon1name', 'player1weapon2name') {
+        for ($i = 0; $i -lt $hudLines.Count; $i++) {
+            if ($hudLines[$i] -notmatch ('^\s+Text\("' + $name + '"\)\s*$')) { continue }
+            for ($j = $i + 1; $j -lt [Math]::Min($i + 16, $hudLines.Count); $j++) {
+                if ($hudLines[$j] -match '^(\s+)Position\(\s*[-\d.]+\s*,\s*[-\d.]+\s*,\s*([-\d.]+)\s*,\s*"Viewport"\s*\)') {
+                    $hudLines[$j] = '{0}Position(-10.000000, -10.000000, {1}, "Viewport")' -f $Matches[1], $Matches[2]; $unnamed++; break
+                }
+            }
+            break
+        }
+    }
+    if ($raised -ne 1 -or $moved -ne 1 -or $hidden -lt 30 -or $unnamed -ne 2) { throw "the HUD file is not laid out as this script expects (raised $raised, moved $moved, hidden $hidden, names $unnamed)" }
     $hud = $hudLines -join "`r`n"
-    "HUD: the weapons raised by $HudLift of the screen, the overheating warning put above them, $hidden other parts put off the screen"
+    "HUD: the weapons raised by $HudLift of the screen, their names and $hidden other parts put off the screen, the overheating warning put above them"
 } else { 'HUD: the game''s own' }
 Write-IfChanged (Join-Path $proj $hudFile) $hud
 

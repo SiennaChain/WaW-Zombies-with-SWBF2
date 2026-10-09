@@ -195,9 +195,18 @@ scoreboard_alone = CoDWaW.exe+0x379DA: 75 73 = EB 73, CoDWaW.exe+0x2680D2: 74 24
 ; in the console, through console: the game's own routine for a line typed
 ; there. player_name is where the game has the name now (through the player's
 ; client record), read first so that it can be put back when SWBF2's picture
-; stops. Leave console or character_names out and the player keeps their own.
+; stops; it is also how the bridge knows there is a player in a map, and the
+; console is given nothing before there is. Leave any of the three out and
+; the player keeps their own name.
+;
+; The game says "... renamed to ..." at the top of the screen whenever a
+; player's name changes, which with this is every change of character.
+; quiet_rename is the one jump in its code that skips the saying (taken, as
+; the game has it, only when there was no name before), made to be taken
+; always; the same form as scoreboard_alone. Leave it out to be told.
 console = CoDWaW.exe+0x194200
 player_name = CoDWaW.exe+0x136C870 > 0x215C
+quiet_rename = CoDWaW.exe+0x273740: 74 2D = EB 2D
 character_names = 1 = Han Solo, 2 = Clone Trooper, 3 = Stormtrooper, 4 = Battle Droid, 5 = Boba Fett, 6 = Chewbacca, 7 = Princess Leia, 8 = Luke Skywalker, 9 = Obi-Wan Kenobi, 10 = Mace Windu, 11 = Darth Maul, 12 = Aayla Secura, 13 = Anakin Skywalker, 14 = Darth Vader, 15 = Yoda, 16 = Count Dooku, 17 = General Grievous, 18 = The Emperor
 ; Three of this game's own settings that the bridge switches, found by name.
 ; (Others above are reached through a pointer the game keeps to the setting,

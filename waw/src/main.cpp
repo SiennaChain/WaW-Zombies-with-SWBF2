@@ -55,6 +55,7 @@ struct Settings {
   int fittedKey = 0;            // the same for "what is fitted to the weapon": Boba Fett's flamethrower
   uint32_t fittedPad = 0;
   std::vector<CodeChange> scoreboardAlone;  // what makes the scores button bring up the scoreboard in a game played alone
+  std::vector<CodeChange> quietRename;      // and what keeps "... renamed to ..." off the screen when the bridge changes the player's name
   AddressSpec console;          // the game's routine that takes a line for its console
   bool haveConsole = false;
   AddressSpec playerName;       // the player's name as the game has it (text), for putting back
@@ -142,6 +143,44 @@ std::vector<AddressSpec> LoadPlaces(const Config& config, const char* key) {
   return places;
 }
 
+// Changes to the game's code, as a setting has them: "place: bytes there =
+// bytes to put, place: ...". None at all if any one cannot be read.
+std::vector<CodeChange> LoadChanges(const Config& config, const char* key) {
+  std::vector<CodeChange> list;
+  const std::string changes = config.GetString("waw", key);
+  const auto bytes = [](const std::string& text, std::vector<unsigned char>& out) {
+    for (const char* p = text.c_str(); *p;) {
+      char* stop = nullptr;
+      const unsigned long byte = std::strtoul(p, &stop, 16);
+      if (stop == p) {
+        ++p;
+      } else {
+        out.push_back(static_cast<unsigned char>(byte));
+        p = stop;
+      }
+    }
+  };
+  for (size_t start = 0; start < changes.size();) {
+    size_t end = changes.find(',', start);
+    if (end == std::string::npos) end = changes.size();
+    const std::string one = changes.substr(start, end - start);
+    start = end + 1;
+    if (one.find_first_not_of(" \t") == std::string::npos) continue;
+    const size_t colon = one.find(':'), equals = one.find('=');
+    CodeChange change;
+    if (colon != std::string::npos && equals != std::string::npos && equals > colon && ParseAddressSpec(one.substr(0, colon), change.at)) {
+      bytes(one.substr(colon + 1, equals - colon - 1), change.before);
+      bytes(one.substr(equals + 1), change.after);
+    }
+    if (change.before.empty() || change.before.size() != change.after.size()) {
+      log::Error("[waw] %s: can't parse \"%s\"", key, one.c_str());
+      return {};
+    }
+    list.push_back(change);
+  }
+  return list;
+}
+
 Settings LoadSettings(const Config& config) {
   Settings s;
   s.haveOrigin = config.GetAddress("waw", "player_origin", s.origin);
@@ -157,40 +196,8 @@ Settings LoadSettings(const Config& config) {
   s.nextAbilityPad = static_cast<uint32_t>(config.GetInt("waw", "next_ability_pad", 0));
   s.fittedKey = config.GetInt("waw", "fitted_key", 0);
   s.fittedPad = static_cast<uint32_t>(config.GetInt("waw", "fitted_pad", 0));
-  // "place: bytes there = bytes to put, place: ..."
-  const std::string changes = config.GetString("waw", "scoreboard_alone");
-  for (size_t start = 0; start < changes.size();) {
-    size_t end = changes.find(',', start);
-    if (end == std::string::npos) end = changes.size();
-    const std::string one = changes.substr(start, end - start);
-    start = end + 1;
-    if (one.find_first_not_of(" \t") == std::string::npos) continue;
-    const size_t colon = one.find(':'), equals = one.find('=');
-    CodeChange change;
-    const auto bytes = [](const std::string& text, std::vector<unsigned char>& out) {
-      for (const char* p = text.c_str(); *p;) {
-        char* stop = nullptr;
-        const unsigned long byte = std::strtoul(p, &stop, 16);
-        if (stop == p) {
-          ++p;
-        } else {
-          out.push_back(static_cast<unsigned char>(byte));
-          p = stop;
-        }
-      }
-    };
-    if (colon != std::string::npos && equals != std::string::npos && equals > colon && ParseAddressSpec(one.substr(0, colon), change.at)) {
-      bytes(one.substr(colon + 1, equals - colon - 1), change.before);
-      bytes(one.substr(equals + 1), change.after);
-    }
-    if (!change.before.empty() && change.before.size() == change.after.size()) {
-      s.scoreboardAlone.push_back(change);
-    } else {
-      log::Error("[waw] scoreboard_alone: can't parse \"%s\"", one.c_str());
-      s.scoreboardAlone.clear();
-      break;
-    }
-  }
+  s.scoreboardAlone = LoadChanges(config, "scoreboard_alone");
+  s.quietRename = LoadChanges(config, "quiet_rename");
   s.haveConsole = config.GetAddress("waw", "console", s.console);
   s.havePlayerName = config.GetAddress("waw", "player_name", s.playerName);
   // "1 = Han Solo, 2 = Clone Trooper": a character's number, and their name
@@ -706,31 +713,55 @@ void ShowHints(const Settings& s) {
 // The settings give each change as a place, the bytes expected there and the
 // bytes to put ([waw] scoreboard_alone); nothing is changed unless every
 // place holds what is expected (or has been changed already).
-void ScoreboardAlone(const Settings& s) {
-  static int tries = 0;
-  static bool done = false;
-  if (done || tries >= 20 || s.scoreboardAlone.empty()) return;
-  ++tries;
+//
+// And one more change of the same kind, for the name the bridge gives the
+// player (NameCharacter, below). The game says "... renamed to ..." at the
+// top of the screen whenever a player's name changes, which here is every
+// change of character; the user asked for that to go. Where the game takes in
+// a player's details and finds a new name, it says so unless the old name was
+// empty (CoDWaW.exe+0x27373D); the jump that skips the saying is made to be
+// taken always ([waw] quiet_rename). The name is still taken in.
+struct ChangesMade {
+  int tries = 0;
+  bool done = false;
+};
+
+// True once every change in the list is in the game's code.
+bool ChangeCode(const std::vector<CodeChange>& changes, const char* key, ChangesMade& made) {
+  if (made.done) return true;
+  if (made.tries >= 20 || changes.empty()) return false;
+  ++made.tries;
   std::vector<uintptr_t> places;
-  for (const CodeChange& change : s.scoreboardAlone) {
+  for (const CodeChange& change : changes) {
     const uintptr_t at = mem::Resolve(change.at);
     std::vector<unsigned char> now(change.before.size());
     if (!at || !mem::Read(at, now.data(), now.size()) || (now != change.before && now != change.after)) {
-      if (tries == 20) log::Error("[waw] scoreboard_alone: what is at one of the places is not what was expected; the scores button is left as the game has it");
-      return;
+      if (made.tries == 20) log::Error("[waw] %s: what is at one of the places is not what was expected; the game's code is left as it is", key);
+      return false;
     }
     places.push_back(now == change.after ? 0 : at);
   }
   for (size_t i = 0; i < places.size(); ++i) {
-    const std::vector<unsigned char>& bytes = s.scoreboardAlone[i].after;
+    const std::vector<unsigned char>& bytes = changes[i].after;
     DWORD old = 0;
     if (!places[i] || !VirtualProtect(reinterpret_cast<void*>(places[i]), bytes.size(), PAGE_EXECUTE_READWRITE, &old)) continue;
     std::memcpy(reinterpret_cast<void*>(places[i]), bytes.data(), bytes.size());
     VirtualProtect(reinterpret_cast<void*>(places[i]), bytes.size(), old, &old);
     FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(places[i]), bytes.size());
   }
-  done = true;
-  log::Info("scores: played alone, the scores button brings up the scoreboard a co-op game has (%zu changes to the game's code)", places.size());
+  made.done = true;
+  return true;
+}
+
+void ScoreboardAlone(const Settings& s) {
+  static ChangesMade scoreboard, rename;
+  const bool had = scoreboard.done, hadQuiet = rename.done;
+  if (ChangeCode(s.scoreboardAlone, "scoreboard_alone", scoreboard) && !had) {
+    log::Info("scores: played alone, the scores button brings up the scoreboard a co-op game has (%zu changes to the game's code)", s.scoreboardAlone.size());
+  }
+  if (ChangeCode(s.quietRename, "quiet_rename", rename) && !hadQuiet) {
+    log::Info("name: the game no longer says so on the screen when the player's name changes");
+  }
 }
 
 // A line for the game's console, as if it had been typed there: the game's
@@ -760,6 +791,14 @@ void NameCharacter(const Settings& s, const SharedBlock* block, bool swbf2Alive)
   static std::string before;
   const uintptr_t console = s.haveConsole ? mem::Resolve(s.console) : 0;
   if (!console || s.characterNames.empty() || !block) return;
+  // Only with a player in a map. The place the name is read from is reached
+  // through the player's own record, which is there from when they are put
+  // into a map and not before; and the console is not to be given anything
+  // while the game is still starting up (it was, once, sixteen thousandths of
+  // a second after this was loaded, and the game went down with it).
+  char was[33] = {};
+  const uintptr_t at = s.havePlayerName ? mem::Resolve(s.playerName) : 0;
+  if (!at || !mem::Read(at, was, sizeof(was) - 1) || !was[0]) return;
   BfPlayerState bf{};
   const uint32_t who = swbf2Alive && block->bf.read(bf) ? bf.who : 0;
   if (who == named) return;
@@ -769,9 +808,7 @@ void NameCharacter(const Settings& s, const SharedBlock* block, bool swbf2Alive)
       if (one.first == static_cast<int>(who)) name = one.second;
     }
     if (name.empty()) return;  // nobody the settings have a name for: the player keeps the one they have
-    char was[33] = {};
-    const uintptr_t at = s.havePlayerName ? mem::Resolve(s.playerName) : 0;
-    if (!named && at && mem::Read(at, was, sizeof(was) - 1)) before = was;
+    if (!named) before = was;
   } else {
     name = before;
   }
@@ -1245,6 +1282,9 @@ void BridgeMain(HMODULE self) {
       log::Info(peerAlive ? "SWBF2 bridge connected" : "SWBF2 bridge lost");
       peerWasAlive = peerAlive;
     }
+    // (Not before the once-a-second work below has been round once: that is
+    // what keeps the game from saying a name has changed.)
+    if (lastReport) NameCharacter(settings, shm.block(), peerAlive);
 
     if (now - lastReport >= 1000) {
       lastReport = now;
@@ -1252,7 +1292,6 @@ void BridgeMain(HMODULE self) {
       ShowHints(settings);
       ScoreboardAlone(settings);
       GodAtStart(settings);
-      NameCharacter(settings, shm.block(), peerAlive);
       if (config.Changed()) {
         log::Info("wawbf.ini changed, reloading");
         settings = LoadSettings(config);

@@ -262,6 +262,16 @@ init()
 	PrecacheShader( "specialty_instakill_zombies" );
 	level.wawbf_powerup_icons_y = 6;    // how far below the top of the screen they sit, in the middle (of 480 down it)
 
+	// A character's controls, shown the first time the player is them
+	// (show_controls): for this many seconds, at the top left (of 640 across
+	// and 480 down), this far apart; and how long the kit and the player's
+	// name have to have stayed as they are before it is believed who that is.
+	level.wawbf_controls_time = 10;
+	level.wawbf_controls_x = 6;
+	level.wawbf_controls_y = 30;
+	level.wawbf_controls_line = 13;
+	level.wawbf_controls_settle = 0.5;
+
 	names = GetArrayKeys( level.wawbf_endless );
 	for( i = 0; i < names.size; i++ )
 	{
@@ -367,7 +377,6 @@ run()
 	level.overridePlayerDamage = ::player_damage;
 
 	level thread powerup_icons();
-	players[0] thread tally();
 
 	// What the game gives a player to take (its own 100, or what the bridge
 	// has made of it). The game's scripts write 100 into a player as their
@@ -382,6 +391,10 @@ run()
 		players[i].wawbf_hand = 0;
 		players[i].wawbf_idle = 0;
 		players[i].wawbf_unchanged = 0;
+		players[i].wawbf_who = "";
+		players[i].wawbf_who_for = 0;
+		players[i].wawbf_shown = [];
+		players[i].wawbf_controls = [];
 		players[i].wawbf_clip = [];
 		players[i].wawbf_stock = [];
 		players[i].wawbf_packed = [];
@@ -417,53 +430,12 @@ test_start()
 	self maps\_zombiemode_score::add_to_player_score( points - self.score );
 }
 
-// What the Tab key (or a controller's Back button) brings up. Played alone,
-// this game has no scoreboard there: it shows "Mission Objectives", and
-// zombies has none, so the screen is empty. The player's tally is put on it
-// as objectives: the round, their points, their kills, how often they went
-// down. Rewritten only when one of them changes, and by the routine that
-// does not announce it.
-tally()
-{
-	self endon( "disconnect" );
-
-	wait( 5 );
-	said = [];
-	for( line = 1; line <= 4; line++ )
-	{
-		said[line] = "";
-	}
-	for( ;; )
-	{
-		says = [];
-		says[1] = "Round " + level.round_number;
-		says[2] = "Points: " + self.score + "   Earned in all: " + self.score_total;
-		says[3] = "Kills: " + self.kills;
-		says[4] = "Times down: " + self.downs;
-		for( line = 1; line <= 4; line++ )
-		{
-			if( says[line] == said[line] )
-			{
-				continue;
-			}
-			if( said[line] == "" )
-			{
-				state = "active";
-				if( line == 1 )
-				{
-					state = "current";
-				}
-				Objective_Add( line, state, says[line] );
-			}
-			else
-			{
-				Objective_String_NoMessage( line, says[line] );
-			}
-			said[line] = says[line];
-		}
-		wait( 1 );
-	}
-}
+// (What the scores button brings up, played alone, was first filled in from
+// here: the game shows "Mission Objectives" there, of which zombies has none,
+// and the player's tally was put on it as objectives. The game then took the
+// map for a mission, and showed them at the top of the screen as it began.
+// The bridge has the button bring up the co-op scoreboard now, and nothing
+// here makes objectives.)
 
 // Hands the player the weapons of whatever kit the bridge says, each time it
 // changes, and again if the game has since taken them away; does what the
@@ -548,6 +520,32 @@ follow_kit()
 		if( kit.fitted && fit_pressed && !IsDefined( self.wawbf_hands ) && !IsDefined( level.wawbf_own_slot ) )
 		{
 			self thread change_fitted( first, second );
+		}
+
+		// The first time the player is a character, that character's controls
+		// are put on the screen (show_controls). Who the character is, is the
+		// player's name: the bridge gives the player the character's (with the
+		// kit, for when it does not, and several share a kit). The name and
+		// the kit do not change in the same moment, so the two are left to
+		// settle first.
+		who = self.playername;
+		if( !IsDefined( who ) )
+		{
+			who = "";
+		}
+		if( who + "/" + want != self.wawbf_who )
+		{
+			self.wawbf_who = who + "/" + want;
+			self.wawbf_who_for = 0;
+		}
+		else if( self.wawbf_who_for < level.wawbf_controls_settle )
+		{
+			self.wawbf_who_for += 0.05;
+			if( self.wawbf_who_for >= level.wawbf_controls_settle && !IsDefined( self.wawbf_shown[self.wawbf_who] ) )
+			{
+				self.wawbf_shown[self.wawbf_who] = true;
+				self thread show_controls( kit, who );
+			}
 		}
 
 		// A lightsaber cuts when Battlefront II's character swings it, and at
@@ -657,6 +655,149 @@ follow_kit()
 		}
 		self.dmg = say;
 	}
+}
+
+// A character's controls, at the top left of the screen for a few seconds:
+// shown the first time the player is that character (follow_kit). What a
+// button of the game's own does is written with the game's mark for "whatever
+// is bound to this", so it reads right whatever the player has bound and on
+// whatever they play with; what the bridges watch for themselves (the next
+// ability, the flamethrower, the change of character, the view) is written as
+// their settings have it.
+show_controls( kit, who )
+{
+	self endon( "disconnect" );
+	self notify( "wawbf_controls" );  // one set at a time
+	self endon( "wawbf_controls" );
+
+	self clear_controls();
+
+	// What the character can do besides shoot, in the order the "next
+	// ability" button goes through them.
+	can = "";
+	count = 0;
+	for( place = 1; place < 8; place++ )
+	{
+		if( IsDefined( kit.abilities[place] ) )
+		{
+			if( count > 0 )
+			{
+				can = can + ", ";
+			}
+			can = can + ability_name( kit.abilities[place] );
+			count++;
+		}
+	}
+
+	lines = [];
+	lines[lines.size] = who;
+	if( kit.saber )
+	{
+		lines[lines.size] = "[{+attack}]  Lightsaber";
+		if( count > 0 )
+		{
+			lines[lines.size] = "[{+speed_throw}] or [{+frag}]  " + can;
+		}
+	}
+	else
+	{
+		lines[lines.size] = "[{+attack}]  Fire     [{+speed_throw}]  Aim";
+		if( count > 0 )
+		{
+			lines[lines.size] = "[{+frag}]  " + can;
+		}
+	}
+	if( count > 1 )
+	{
+		lines[lines.size] = "LB or X  Next ability";
+	}
+	if( kit.fitted )
+	{
+		lines[lines.size] = "D-pad left or 5  Flamethrower";
+	}
+	else if( IsDefined( kit.second ) )
+	{
+		lines[lines.size] = "[{weapnext}]  Change weapon";
+	}
+	lines[lines.size] = "D-pad up, down or F10, F11  Next hero, villain";
+	if( !kit.saber )
+	{
+		lines[lines.size] = "D-pad right or F9  First or third person";
+	}
+
+	for( i = 0; i < lines.size; i++ )
+	{
+		line = NewClientHudElem( self );
+		line.foreground = true;
+		line.hidewheninmenu = true;
+		line.alignX = "left";
+		line.alignY = "top";
+		line.horzAlign = "left";
+		line.vertAlign = "top";
+		line.x = level.wawbf_controls_x;
+		line.y = level.wawbf_controls_y + i * level.wawbf_controls_line;
+		line.fontScale = 1.2;
+		if( i == 0 )
+		{
+			line.fontScale = 1.5;
+			line.color = ( 1, 0.85, 0.4 );
+		}
+		line.alpha = 1;
+		line SetText( lines[i] );
+		self.wawbf_controls[i] = line;
+	}
+
+	wait( level.wawbf_controls_time );
+	for( i = 0; i < self.wawbf_controls.size; i++ )
+	{
+		self.wawbf_controls[i] FadeOverTime( 1 );
+		self.wawbf_controls[i].alpha = 0;
+	}
+	wait( 1 );
+	self clear_controls();
+}
+
+clear_controls()
+{
+	for( i = 0; i < self.wawbf_controls.size; i++ )
+	{
+		self.wawbf_controls[i] Destroy();
+	}
+	self.wawbf_controls = [];
+}
+
+// What an ability is called on the screen.
+ability_name( ability )
+{
+	if( ability == "grenade" )
+	{
+		return "Thermal detonator";
+	}
+	if( ability == "rocket" )
+	{
+		return "Wrist rocket";
+	}
+	if( ability == "throw" )
+	{
+		return "Throw lightsaber";
+	}
+	if( ability == "push" )
+	{
+		return "Force push";
+	}
+	if( ability == "pull" )
+	{
+		return "Force pull";
+	}
+	if( ability == "choke" )
+	{
+		return "Force choke";
+	}
+	if( ability == "lightning" )
+	{
+		return "Force lightning";
+	}
+	return ability;
 }
 
 // Changes between a weapon and what is fitted to it, whichever is in hand.

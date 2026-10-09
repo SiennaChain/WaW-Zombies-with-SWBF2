@@ -299,7 +299,11 @@ cut = 0
 ; hud_keep: of this game's HUD only what falls in this part of the picture is
 ; drawn (left, top, right, bottom, each 0 to 1 across or down it): the place
 ; of the weapons and abilities, as the arena's build raises them (its
-; -HudLift has to agree with this). Nothing else of the HUD is drawn, but for
+; -HudLift has to agree with this). It is a tight fit, between two things the
+; game's own HUD, still drawn underneath ours, shows at the left: the player's
+; points, with a star, whenever they change (down to 0.578), and the name of
+; a weapon whenever the one in hand changes (from 0.711). Both happen at
+; every change of character. Nothing else of the HUD is drawn, but for
 ; hud_middle; and zoomed in, the weapons are not either (the game draws
 ; something else in their place). hud_lens is how the HUD's part of the frame
 ; is known: the x scale of the projection the game draws it through (1.7321
@@ -311,7 +315,7 @@ cut = 0
 ; WaW switches its own crosshair off meanwhile. It must not overlap hud_keep.
 ; Leave it out for no crosshair of this game's (and WaW's own stays).
 hide_ground = 81, 149
-hud_keep = 0, 0.57, 0.33, 0.745
+hud_keep = 0, 0.582, 0.33, 0.706
 hud_middle = 0.4, 0.33, 0.6, 0.67
 hud_lens = 1.7321
 
