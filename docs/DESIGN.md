@@ -101,8 +101,8 @@ measures them (`docs/PHASE0.md`).
 ## Weapons: the character's own (proposed 2026-10-08)
 
 A simpler plan than the one in the next section, proposed by the user after
-playing with fire, aim and reload working, and the one to build towards
-unless that changes:
+playing with fire, aim and reload working. Built, with what each character's
+abilities do on top of it: `docs/PHASE3.md`.
 
 - **No Battlefront weapons in the box or on the walls.** A character keeps
   the weapons it has in SWBF2. Han Solo has his pistol; a clone has a rifle
@@ -115,6 +115,8 @@ unless that changes:
   one and the villains with another, instead of through SWBF2's spawn
   screen. Built: `docs/PHASE2.md`.
 - **Third person** for the characters it suits, lightsaber heroes above all.
+  Built: `docs/PHASE2.md` for the camera, `docs/PHASE3.md` for aiming and
+  shooting from it.
 
 What it saves: SWBF2 never has to be given a weapon it does not already have
 on that character, and nothing has to be invented for each pairing of a WaW

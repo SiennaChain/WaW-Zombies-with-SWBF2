@@ -16,6 +16,10 @@ namespace {
 
 std::atomic<bool> g_publish{false};
 std::atomic<bool> g_draw{false};
+std::atomic<bool> g_standAside{false};
+std::atomic<bool> g_blank{false};
+std::atomic<bool> g_mark{false};
+std::atomic<float> g_markX{0}, g_markY{0};
 
 // The second mapping. Either side may arrive first; whoever does creates it.
 FrameHeader* g_header = nullptr;
@@ -113,7 +117,11 @@ void Publish(IDirect3DDevice9* device) {
     BYTE* out = g_pixels[slot];
     const BYTE* in = static_cast<const BYTE*>(locked.pBits);
     const size_t row = static_cast<size_t>(desc.Width) * 4;
-    for (UINT y = 0; y < desc.Height; ++y) std::memcpy(out + y * row, in + y * locked.Pitch, row);
+    if (g_blank.load(std::memory_order_relaxed)) {
+      std::memset(out, 0, row * desc.Height);  // nothing anywhere: the other game's picture shows through untouched
+    } else {
+      for (UINT y = 0; y < desc.Height; ++y) std::memcpy(out + y * row, in + y * locked.Pitch, row);
+    }
     g_copy->UnlockRect();
     g_header->width[slot] = desc.Width;
     g_header->height[slot] = desc.Height;
@@ -137,9 +145,22 @@ void Draw(IDirect3DDevice9* device) {
   const DWORD now = GetTickCount();
   const uint32_t sequence = g_header->sequence.load(std::memory_order_acquire);
   const bool fresh = !g_haveDrawn || sequence != g_drawnSequence;
-  if (fresh) g_lastNewPicture = now;
+  static uint32_t arrived = 0;
+  static bool anyArrived = false;
+  if (!anyArrived || sequence != arrived) {
+    arrived = sequence;
+    anyArrived = true;
+    g_lastNewPicture = now;
+  }
   // The other game has stopped (closed, loading, crashed): better no weapon than a frozen one.
   if (now - g_lastNewPicture > 500) return;
+  // Standing aside: the picture is arriving and would be drawn, and counts as
+  // drawn for everyone who asks, but this game is showing something of its own
+  // in its place for a moment.
+  if (g_standAside.load(std::memory_order_relaxed)) {
+    g_lastDrawn.store(now ? now : 1, std::memory_order_relaxed);
+    return;
+  }
 
   const uint32_t slot = g_header->front.load(std::memory_order_acquire) & 1;
   const UINT width = g_header->width[slot], height = g_header->height[slot];
@@ -216,11 +237,53 @@ void Draw(IDirect3DDevice9* device) {
   device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
   device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
 
+  // The crosshair: four short bars round a gap, dark behind and light on top.
+  if (g_mark.load(std::memory_order_relaxed)) {
+    const float cx = left + (g_markX.load(std::memory_order_relaxed) * 0.5f + 0.5f) * static_cast<float>(viewport.Width);
+    const float cy = top + (0.5f - g_markY.load(std::memory_order_relaxed) * 0.5f) * static_cast<float>(viewport.Height);
+    const float unit = static_cast<float>(viewport.Height) / 720.0f;
+    struct Flat {
+      float x, y, z, rhw;
+      DWORD colour;
+    };
+    const auto bar = [&](float x0, float y0, float x1, float y1, DWORD colour) {
+      const Flat v[4] = {{x0, y0, 0, 1, colour}, {x1, y0, 0, 1, colour}, {x0, y1, 0, 1, colour}, {x1, y1, 0, 1, colour}};
+      device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(Flat));
+    };
+    device->SetTexture(0, nullptr);
+    device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    for (int pass = 0; pass < 2; ++pass) {
+      const float grow = pass == 0 ? 1.5f * unit : 0.0f;                 // the dark edge first
+      const DWORD colour = pass == 0 ? 0xB0000000 : 0xF0FFFFFF;
+      const float gap = 5.0f * unit, length = 9.0f * unit, half = 1.0f * unit;
+      bar(cx - gap - length - grow, cy - half - grow, cx - gap + grow, cy + half + grow, colour);
+      bar(cx + gap - grow, cy - half - grow, cx + gap + length + grow, cy + half + grow, colour);
+      bar(cx - half - grow, cy - gap - length - grow, cx + half + grow, cy - gap + grow, colour);
+      bar(cx - half - grow, cy + gap - grow, cx + half + grow, cy + gap + length + grow, colour);
+      bar(cx - half - grow, cy - half - grow, cx + half + grow, cy + half + grow, colour);
+    }
+  }
+
   saved->Apply();
   saved->Release();
   g_lastDrawn.store(now ? now : 1, std::memory_order_relaxed);
   if (!saidOk) log::Info("overlay: drawing a %ux%u picture over a %lux%lu view", width, height, viewport.Width, viewport.Height);
   saidOk = true;
+}
+
+void SetStandAside(bool aside) { g_standAside.store(aside, std::memory_order_relaxed); }
+
+void SetBlank(bool blank) { g_blank.store(blank, std::memory_order_relaxed); }
+
+void SetMark(bool on, float x, float y) {
+  g_markX.store(x, std::memory_order_relaxed);
+  g_markY.store(y, std::memory_order_relaxed);
+  g_mark.store(on, std::memory_order_relaxed);
 }
 
 bool Drawing() {

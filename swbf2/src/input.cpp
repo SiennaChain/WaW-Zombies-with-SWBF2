@@ -44,9 +44,15 @@ std::atomic<bool> g_enabled{false};
 std::atomic<uint32_t> g_buttons{0};          // from WaW
 std::atomic<uint32_t> g_forced{0};           // [debug] force_buttons
 std::atomic<uint32_t> g_forcedFunctions{0};  // [debug] force_functions
-std::atomic<int> g_fire{0}, g_aim{-1}, g_reload{-1};
+std::atomic<int> g_fire{0}, g_aim{-1}, g_reload{-1}, g_ability{-1}, g_meleeAbility{-1}, g_nextAbility{-1}, g_nextWeapon{-1};
 std::atomic<int> g_zoomed{-1};
 std::atomic<bool> g_aimAllowed{true};
+std::atomic<bool> g_melee{false};
+std::atomic<uint32_t> g_nextWeaponPresses{0};  // asked for and not yet made
+std::atomic<int> g_reloadUpdates{0};           // how many more updates reload is held for
+std::atomic<int> g_holdUpdates[kFunctionCount];  // the same for any function (HoldFor)
+std::atomic<uint32_t> g_held{0};               // SetHeld
+std::atomic<float> g_axis[4];                  // SetAxis
 BYTE* g_player = nullptr;
 bool g_installed = false, g_failed = false;
 
@@ -58,9 +64,13 @@ uint32_t Bit(int function) { return function >= 0 && function < kFunctionCount ?
 
 // The functions that are simply on while their button is.
 uint32_t Wanted(uint32_t buttons) {
-  uint32_t functions = g_forcedFunctions.load(std::memory_order_relaxed) & ((1u << kFunctionCount) - 1);
+  uint32_t functions = (g_forcedFunctions.load(std::memory_order_relaxed) | g_held.load(std::memory_order_relaxed)) &
+                       ((1u << kFunctionCount) - 1);
+  const bool melee = g_melee.load(std::memory_order_relaxed);
   if (buttons & kWawButtonFire) functions |= Bit(g_fire.load(std::memory_order_relaxed));
-  if (buttons & kWawButtonReload) functions |= Bit(g_reload.load(std::memory_order_relaxed));
+  if ((buttons & kWawButtonReload) && !melee) functions |= Bit(g_reload.load(std::memory_order_relaxed));
+  if (buttons & kWawButtonAbility) functions |= Bit((melee ? g_meleeAbility : g_ability).load(std::memory_order_relaxed));
+  if (buttons & kWawButtonNextAbility) functions |= Bit(g_nextAbility.load(std::memory_order_relaxed));
   return functions;
 }
 
@@ -104,9 +114,38 @@ void __cdecl OnControllerUpdate(BYTE* controller) {
   uint32_t on = (wanted & kHeldFunctions) | (wanted & ~before & ~kHeldFunctions);
   if (enabled) on |= AimPress((buttons & kWawButtonAim) != 0 && g_aimAllowed.load(std::memory_order_relaxed));
   before = wanted;
-  if (!on || !controller[kControllerInUse]) return;
+  if (enabled) {
+    for (int function = 0; function < kFunctionCount; ++function) {
+      if (g_holdUpdates[function].load(std::memory_order_relaxed) > 0) {
+        --g_holdUpdates[function];
+        on |= Bit(function);
+      }
+    }
+  }
+  if (enabled && g_reloadUpdates.load(std::memory_order_relaxed) > 0) {
+    --g_reloadUpdates;
+    if (!g_melee.load(std::memory_order_relaxed)) on |= Bit(g_reload.load(std::memory_order_relaxed));
+  }
+  // A press of "next weapon": on for this update and off for the next, which
+  // is how the game sees a button go down.
+  static bool pressed = false;
+  if (pressed) {
+    pressed = false;
+  } else if (enabled && g_nextWeaponPresses.load(std::memory_order_relaxed) > 0) {
+    --g_nextWeaponPresses;
+    on |= Bit(g_nextWeapon.load(std::memory_order_relaxed));
+    pressed = true;
+  }
+  if (!controller[kControllerInUse]) return;
   BYTE* state = *reinterpret_cast<BYTE**>(controller + kControllerState);
   if (!state) return;
+  if (enabled) {
+    for (int axis = 0; axis < 4; ++axis) {
+      const float value = g_axis[axis].load(std::memory_order_relaxed);
+      if (value != 0.0f) reinterpret_cast<float*>(state)[axis] = value;
+    }
+  }
+  if (!on) return;
   *reinterpret_cast<uint32_t*>(state + kStateFunctions) |= on;
   ++g_turnedOn;
 }
@@ -157,15 +196,43 @@ void SetFunctions(const Functions& functions) {
             reload = g_reload.exchange(functions.reload);
   static bool said = false;
   if (!said || fire != functions.fire || aim != functions.aim || reload != functions.reload) {
-    said = true;
     log::Info("forward_fire: fire is game function %d, aim (zoom) %d, reload %d (-1: not forwarded)", functions.fire,
               functions.aim, functions.reload);
   }
+  const int ability = g_ability.exchange(functions.ability), meleeAbility = g_meleeAbility.exchange(functions.meleeAbility),
+            nextAbility = g_nextAbility.exchange(functions.nextAbility), nextWeapon = g_nextWeapon.exchange(functions.nextWeapon);
+  if (!said || ability != functions.ability || meleeAbility != functions.meleeAbility ||
+      nextAbility != functions.nextAbility || nextWeapon != functions.nextWeapon) {
+    log::Info("forward_fire: the ability is game function %d (%d with a lightsaber), the next ability %d, the next weapon %d",
+              functions.ability, functions.meleeAbility, functions.nextAbility, functions.nextWeapon);
+  }
+  said = true;
 }
 
 void SetZoomed(int zoomed) { g_zoomed.store(zoomed, std::memory_order_relaxed); }
 
 void SetAimAllowed(bool allowed) { g_aimAllowed.store(allowed, std::memory_order_relaxed); }
+
+void SetMelee(bool melee) {
+  if (g_melee.exchange(melee) != melee) {
+    log::Info(melee ? "forward_fire: a lightsaber: the ability button works the Force, and reload is not sent"
+                    : "forward_fire: no lightsaber: the ability button is secondary fire");
+  }
+}
+
+void PressNextWeapon() { ++g_nextWeaponPresses; }
+
+void PressReload() { g_reloadUpdates.store(12, std::memory_order_relaxed); }
+
+void HoldFor(int function, int updates) {
+  if (function >= 0 && function < kFunctionCount) g_holdUpdates[function].store(updates, std::memory_order_relaxed);
+}
+
+void SetHeld(uint32_t mask) { g_held.store(mask, std::memory_order_relaxed); }
+
+void SetAxis(int axis, float value) {
+  if (axis >= 0 && axis < 4) g_axis[axis].store(value, std::memory_order_relaxed);
+}
 
 void SetButtons(uint32_t buttons) {
   const uint32_t before = g_buttons.exchange(buttons);

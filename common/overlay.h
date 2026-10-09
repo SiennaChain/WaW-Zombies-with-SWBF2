@@ -34,6 +34,10 @@ namespace wawbf::overlay {
 // it does nothing unless SetPublish(true).
 void SetPublish(bool on);
 void Publish(IDirect3DDevice9* device);
+// While true the picture published is empty: a picture still arrives, so the
+// other side carries on as it was, but there is nothing in it. For the moment
+// one character is taken away and the next put in its place.
+void SetBlank(bool blank);
 
 // WaW. Draw() is called just before the end of each scene; it does nothing
 // unless SetDraw(true), or if no picture has arrived for half a second.
@@ -42,5 +46,13 @@ void Draw(IDirect3DDevice9* device);
 // True while the other game's picture is really going onto the screen: a
 // picture was drawn within the last half second.
 bool Drawing();
+// While true the picture is left off the screen, though it still counts as
+// being drawn: for the moments this game shows something of its own where
+// the other's would be (its knife).
+void SetStandAside(bool aside);
+// A crosshair drawn over the picture: where, from -1 to 1 across the view and
+// from -1 (bottom) to 1 (top) up it. For the view from behind the character:
+// it marks the spot the next shot is pointed at.
+void SetMark(bool on, float x, float y);
 
 }  // namespace wawbf::overlay

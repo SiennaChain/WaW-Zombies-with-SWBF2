@@ -210,8 +210,9 @@ Read from a disassembly of the exe. Addresses are offsets from where
    into one flat array of **raw controls**: 760 floats at controller `+0x14`,
    76 to a device.
 2. The player's **bindings** are a table at controller `+0x20BC`: for each of
-   43 **game functions**, two codes. A code up to `0xFF` is a keyboard key
-   (DirectInput scan code); a higher one is a raw control, `(code >> 8) - 1`.
+   43 **game functions**, three codes of two bytes each. A code up to `0xFF`
+   is a keyboard key (DirectInput scan code); a higher one is a raw control,
+   `(code >> 8) - 1`. `tools/probe/bfbindings.ps1` lists it.
 3. `+0x153C0` walks that table and, for every binding that is pressed, calls
    `+0x12B640` to switch the function on in the player's **control state**
    (pointer at controller `+0x25D0`). The state is four floats for the
@@ -235,11 +236,14 @@ holding it on with `[debug] force_functions` and seeing what the soldier did.
 | Function | What | How it was told |
 |---|---|---|
 | 0 | primary fire | pictures of the window: flash, recoil, the bolt landing |
-| 1 | secondary fire, probably | the grenade count went down by one; seen once |
+| 1 | secondary fire | the grenade count went down by one |
 | 5 | zoom | the field of view goes from 51 to 22 degrees (`tools/probe/bffunctions.ps1`) |
 | 7 | reload | a part-used magazine came back full |
 | 8 | use | at a command post it opens the class menu, over the player's game |
 | 12 | not reload | nothing seen |
+
+`docs/PHASE3.md` has the ones found since (jump, crouch, the next weapon and
+ability), and what 1 and 7 turn into for a character with a lightsaber.
 
 Three things made reload slow to find, and are worth knowing before looking
 for another:

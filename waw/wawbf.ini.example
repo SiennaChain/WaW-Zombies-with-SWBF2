@@ -33,6 +33,19 @@ forward_buttons = 1
 held_fire = CoDWaW.exe+0x2C0FE5C
 held_aim = CoDWaW.exe+0x2C0FDBC
 held_reload = CoDWaW.exe+0x2C0FED4, CoDWaW.exe+0x2C0FEE8
+; The same for the grenade button (+frag), which is the character's ability
+; button: a grenade, a rocket or the Force, whichever is selected in SWBF2
+; (docs/PHASE3.md). Left empty, the G key.
+held_ability = CoDWaW.exe+0x2C0FE84
+; And jump (+gostand): SWBF2's character jumps when it is pressed.
+held_jump = CoDWaW.exe+0x2C0FDF8
+; "The next ability" is nothing this game has an action for, so the bridge
+; looks at a key and a controller button itself, while this game's window is
+; the one in front. The key is a Windows virtual-key code (0x58 = X); the
+; button is XInput's number for it (0x0004 = left on the d-pad, 0x0001 up,
+; 0x0002 down, 0x0008 right). 0 = none.
+next_ability_key = 0x58
+next_ability_pad = 0x0004
 ; The byte behind this game's cg_drawGun setting (1 = draw the player's gun).
 ; While SWBF2's weapon is being drawn over the picture the bridge keeps it 0,
 ; so there is one gun on screen, and puts it back to 1 when SWBF2's picture
@@ -56,6 +69,86 @@ view_axis = CoDWaW.exe+0x3120364
 ; cg_thirdPersonRange (120), which can be changed in its console.
 third_person = CoDWaW.exe+0x2F9CC14 > 0x10
 hide_body = CoDWaW.exe+0x136C6F8, CoDWaW.exe+0x136C870 > 0xCC
+; Where the camera sits in third person. The game puts it straight behind the
+; player's head, so whatever they aim at, and the crosshair, are behind the
+; character's head. For a character with something to aim the camera is swung
+; round the player by gun_view_angle degrees (third_person_angle is the number
+; behind cg_thirdPersonAngle): negative puts the character left of the
+; middle and the aim to its right. 0 leaves the game's own.
+third_person_angle = CoDWaW.exe+0x328EBB0 > 0x10
+gun_view_angle = -14
+; A steady camera. In third person this game hangs its camera on the head of
+; the player's own soldier (the bone "j_head"). The soldier is hidden, but it
+; still breathes, shifts about and bobs as it runs, and the picture went with
+; its head. head_call is the one call in the game's code that asks where that
+; head is (a five-byte call to head_routine); the bridge sends it through a
+; routine of its own that answers "straight above where the soldier stands,
+; at eye height". head_entity_origin is where, in the entity handed to that
+; call, its drawn position is. Leave head_call out to keep the game's own.
+; Needs the game restarted to take effect.
+head_call = CoDWaW.exe+0x5EDA5
+head_routine = CoDWaW.exe+0x42F90
+head_entity_origin = 0x24
+; Shots, from behind the character. This game fires a player's shot the way
+; their gun points, not the way they look: two angles (pitch, yaw) that it
+; works out from the gun drawn in the player's hands, and stops working out
+; in third person, where that gun is not drawn. Left alone, every shot from
+; behind goes the way the player was facing when the view changed. gun_angles
+; is where those two angles are kept; from behind, the bridge sets them every
+; frame so that the shot lands on what the middle of the screen shows. For
+; that it tells the scripts where the line through the middle of the screen
+; runs, in aim_field (the player entity's "spawnflags", which the scripts read
+; and which means nothing on a player), and they answer in scripts_say with
+; how far along it the first thing is. docs/PHASE3.md has how this was found.
+gun_angles = CoDWaW.exe+0x312B65C
+aim_field = CoDWaW.exe+0x136C8A0
+; Being hit does not throw the view about from behind the character: the
+; number behind bg_viewKickScale (how far the view is thrown for each point of
+; damage) is kept at 0 while the view is third person, and put back afterwards.
+view_kick = CoDWaW.exe+0x4F43C4 > 0x10
+; How the bridge and the mod's scripts (waw/mod) talk: through two numbers on
+; the player's entity that mean nothing on a player. kit_field is the one the
+; scripts read as self.count, and the bridge writes: SWBF2's kit, the ability
+; selected and each use of it. scripts_say is the one the scripts write as
+; self.dmg: which weapon is in hand, whether the ability can be used, whether
+; the weapon is empty, its magazine, and how far off the thing in the middle of
+; the screen is. Both are fields of the first entity (docs/PHASE3.md).
+kit_field = CoDWaW.exe+0x136C93C
+scripts_say = CoDWaW.exe+0x136C8C4
+; The knife, in first person: while the number at weapon_state (what the
+; player's weapon is doing) is one of knife_states, this game's own arms and
+; knife are shown and SWBF2's picture stands aside. [debug] log_weapon_state
+; = 1 logs each change of that number, which is how the states were found: a
+; knife attack goes 13, 14, 15 (a thrown grenade 16 to 21, a shot 5).
+weapon_state = CoDWaW.exe+0x14ED170
+knife_states = 13, 14, 15
+; The same number says when the weapon is being reloaded (SWBF2's is then
+; reloaded too) and when the player is sprinting (SWBF2's character sprints).
+reload_states = 7, 8, 9, 10, 11
+sprint_states = 23, 24
+; Crouched: the player's flags, and which bit of them. SWBF2's character
+; crouches while it is set.
+stance = CoDWaW.exe+0x14ED134
+crouch_bit = 0x4
+; A jump is passed to SWBF2 only when it is one: pressed while the player is
+; standing, upright, on something. (Pressed again in the air it does nothing
+; in this game, and SWBF2's heroes would jump a second time off nothing.)
+; ground is the number of the thing the player stands on, and ground_none
+; what it reads in the air.
+ground = CoDWaW.exe+0x14ED0F0
+ground_none = 1023
+; Jumps. SWBF2's characters jump higher than a WaW player, and so stay in the
+; air longer; jump_height is the number behind this game's jump_height
+; setting, and jump_heights what it is made for each kit (kit = units, ...),
+; chosen so that the player is off the ground as long as the character is:
+; troopers 75, heroes with guns 107, anyone with a lightsaber 150. The game's
+; own 39 comes back when SWBF2 goes away.
+jump_height = CoDWaW.exe+0x4F0BD8 > 0x10
+jump_heights = 1 = 107, 2 = 75, 3 = 75, 4 = 107, 5 = 107, 6 = 107, 7 = 150, 8 = 150, 9 = 150, 10 = 150, 11 = 150, 12 = 150
+; The byte behind this game's cl_paused: not zero while the pause menu is up.
+; SWBF2's picture is drawn over everything, so while the game is paused it
+; stands aside for the menu.
+paused = CoDWaW.exe+0x1B552C4 > 0x10
 
 [overlay]
 ; 1 = draw SWBF2's first-person weapon and HUD over this game's picture.
@@ -65,3 +158,7 @@ draw = 0
 [proxy]
 ; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.
 chain =
+
+[debug]
+; 1 = log every change of the number at [waw] weapon_state.
+log_weapon_state = 0

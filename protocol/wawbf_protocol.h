@@ -23,7 +23,7 @@ namespace wawbf {
 
 constexpr uint32_t kMagic = 0x46425757;  // "WWBF" in memory
 constexpr uint32_t kMagicInitializing = 1;
-constexpr uint32_t kVersion = 5;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons; 5: camera
+constexpr uint32_t kVersion = 11;  // 2: WawPlayerState gained timeUs; 3: tanHalfFov; 4: buttons; 5: camera; 6: kit; 7: weapon in hand, abilities; 8: weapon uses; 9: magazine, charge; 10: the thrown grenade; 11: and not
 constexpr const wchar_t* kMappingName = L"Local\\WaWBF_v1";
 constexpr uint32_t kMappingSize = 0x10000;  // 64 KiB; later phases add rings
 constexpr uint32_t kHeartbeatTimeoutMs = 2000;
@@ -103,6 +103,13 @@ enum WawFlags : uint32_t {
   kWawAnglesValid = 1u << 1,
   kWawFovValid = 1u << 2,
   kWawCameraValid = 1u << 3,
+  // From WaW's scripts, which know what the player is carrying:
+  kWawAbilityReady = 1u << 4,  // the character's ability may be used now (there is a grenade or a rocket left)
+  kWawDry = 1u << 5,           // the weapon in hand has nothing left to fire
+  kWawReloading = 1u << 6,     // the weapon in hand is being reloaded (from the game itself, not the scripts)
+
+  kWawCrouching = 1u << 8,     // the player is crouched
+  kWawSprinting = 1u << 9,     // the player is sprinting
 };
 
 // What the player is holding down in WaW that belongs to SWBF2's side of the
@@ -111,6 +118,9 @@ enum WawButtons : uint32_t {
   kWawButtonFire = 1u << 0,     // WaW's attack
   kWawButtonAim = 1u << 1,      // WaW's aim down the sights
   kWawButtonReload = 1u << 2,
+  kWawButtonAbility = 1u << 3,      // WaW's grenade button: the character's ability (a grenade, a rocket, the Force)
+  kWawButtonNextAbility = 1u << 4,  // "the next ability": a button and a key the WaW bridge watches for itself
+  kWawButtonJump = 1u << 5,         // WaW's jump (it also stands a crouched player up)
 };
 
 // Game A -> game B. WaW is authoritative for player movement.
@@ -139,6 +149,15 @@ struct WawPlayerState {
   float cameraOrigin[3];
   float cameraForward[3];
   float cameraUp[3];
+  // Which of the character's weapons WaW's player has in hand: 1 the first,
+  // 2 the second, 0 not known. SWBF2 changes its own to match.
+  uint32_t weapon;
+  // The rounds left in that weapon's magazine and how many it holds, from
+  // WaW's scripts; clipSize 0 = not a weapon whose magazine SWBF2 should be
+  // made to agree with. WaW does the counting, so SWBF2's magazine is kept at
+  // WaW's, and it is reloaded when WaW's is.
+  uint32_t clip;
+  uint32_t clipSize;
 };
 
 // The full angle, in degrees, that a tangent of half of it stands for.
@@ -153,6 +172,9 @@ enum BfFlags : uint32_t {
   // SWBF2 is showing the player's character from behind, so WaW should draw
   // from behind the player too, and leave its own soldier out.
   kBfThirdPerson = 1u << 2,
+  kBfAbilityInUse = 1u << 3,  // the selected ability is being used this moment
+  kBfWeaponInUse = 1u << 4,   // and so is the weapon in hand: a shot being fired, a lightsaber mid-swing
+
 };
 
 // Game B -> game A. Phase 0 only reports where the BF unit is, so the two
@@ -162,6 +184,21 @@ struct BfPlayerState {
   uint32_t flags;           // BfFlags
   float rawPosition[3];     // as read from SWBF2 memory, BF space
   float positionInWaw[3];   // rawPosition converted back to WaW space
+  // Which kit the SWBF2 character carries (docs/PHASE3.md has the list), or
+  // 0 if it is not known. WaW hands its player the weapons that match.
+  uint32_t kit;
+  // The character's abilities (SWBF2's "secondary" weapons: a grenade, a
+  // rocket, a Force power). Which one is selected, as the place it has among
+  // all the unit's weapons, and how many times one has been used: WaW's
+  // scripts make the same thing happen to the zombies each time that goes up.
+  uint32_t ability;
+  uint32_t abilityUses;
+  // The same count for the weapon in hand. For a lightsaber each one is a
+  // swing, and a swing is the only time the blade cuts anything in WaW.
+  uint32_t weaponUses;
+  // How far the weapon had been charged when it was last fired, 0 to 1 (the
+  // bowcaster: held, it charges, and fires when let go).
+  float weaponCharge;
 };
 
 struct SharedBlock {
@@ -172,8 +209,8 @@ struct SharedBlock {
 
 static_assert(std::is_standard_layout<SharedBlock>::value, "layout must be fixed");
 static_assert(sizeof(PeerInfo) == 12, "PeerInfo layout changed: bump kVersion");
-static_assert(sizeof(WawPlayerState) == 84, "WawPlayerState changed: bump kVersion");
-static_assert(sizeof(BfPlayerState) == 32, "BfPlayerState changed: bump kVersion");
+static_assert(sizeof(WawPlayerState) == 96, "WawPlayerState changed: bump kVersion");
+static_assert(sizeof(BfPlayerState) == 52, "BfPlayerState changed: bump kVersion");
 static_assert(offsetof(SharedBlock, waw) == 0x40, "layout changed: bump kVersion");
 static_assert(offsetof(SharedBlock, bf) == 0xC0, "layout changed: bump kVersion");
 static_assert(sizeof(SharedBlock) <= kMappingSize, "mapping too small");

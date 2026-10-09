@@ -26,6 +26,7 @@
 #include "log.h"
 #include "memory.h"
 #include "overlay.h"
+#include "pad.h"
 #include "shm.h"
 
 namespace wawbf {
@@ -149,8 +150,32 @@ struct Settings {
   bool forwardFire = false;      // pull this game's trigger when the WaW player pulls theirs
   ValueSpec asks[kAsks];         // what to write to ask the mission script for each of kAskNames
   int askKeys[kAsks] = {};       // and the key that asks (a Windows virtual-key code)
+  int askPads[kAsks] = {};       // and the controller button (XInput's numbers); 0 = none
+  int viewTogglePad = 0;         // the same for viewToggle
+
+  int debugAxis = -1;            // [debug] force_axis
+  float debugAxisValue = 0;
+  int jumpFunction = -1;         // the game's function that jumps
+  int crouchFunction = -1;       // the game's function that crouches and stands the unit again (a switch)
+  int sprintFunction = -1;       // and the one held to sprint
+  int forwardAxis = -1;          // which of the game's stick axes is "forward" (pushed to +1); -1 = the stick is left alone
+  int strafeAxis = -1;           // and which is "to the left"
+  float stickFullAt = 4.8f;      // the speed, metres a second, at which the stick is pushed all the way (WaW's run)
+  bool saberSprint = false;      // whether a character with a lightsaber is told to sprint when WaW's player does
+  float treadmill = 0;           // [debug] treadmill: a speed the unit is given while WaW's player stands still
+  ValueSpec crouched;            // the unit is crouched while this address has these bits set (u8)
+  AddressSpec energy;            // the unit's energy, which sprinting and jumping spend
+  bool haveEnergy = false;
+  float energyFull = 100.0f;
+  float characterScale = 1.0f;   // third person: how big the character is drawn; 1 = as this game makes it
+  std::vector<std::pair<int, float>> characterScaleKits;  // and for particular kits
   input::Functions functions;    // which of the game's functions each WaW button turns on
   float zoomedBelow = 40.0f;     // the game counts as zoomed in when its vertical field of view is under this; 0 = not looked at
+  AddressSpec kit;               // the unit's full health, which the arena's script writes the kit into
+  bool haveKit = false;
+  AddressSpec weapons;           // the unit's weapons: eight pointers, then the place in hand for each of the two channels
+  bool haveWeapons = false;
+  int weaponState = 0xB0;        // in a weapon: a number that is 0 while the weapon is idle
   ValueSpec thirdPerson;         // the view is third person while this address holds this value
   bool followCamera = false;     // in third person, draw from where WaW's camera is
 
@@ -196,6 +221,33 @@ Settings LoadSettings(const Config& config) {
   s.followDelayUs = static_cast<int>(config.GetFloat("swbf2", "follow_delay_ms", 12.0f) * 1000.0f);
   s.facingExtra = ParseOffsets(config.GetString("swbf2", "facing_extra"));
   s.viewToggleKey = config.GetInt("swbf2", "view_toggle_key", 0);
+  s.viewTogglePad = config.GetInt("swbf2", "view_toggle_pad", 0);
+
+  if (std::sscanf(config.GetString("debug", "force_axis").c_str(), " %d %f", &s.debugAxis, &s.debugAxisValue) != 2) s.debugAxis = -1;
+  s.jumpFunction = config.GetInt("swbf2", "jump_function", s.jumpFunction);
+  s.crouchFunction = config.GetInt("swbf2", "crouch_function", s.crouchFunction);
+  s.sprintFunction = config.GetInt("swbf2", "sprint_function", s.sprintFunction);
+  s.forwardAxis = config.GetInt("swbf2", "forward_axis", s.forwardAxis);
+  s.strafeAxis = config.GetInt("swbf2", "strafe_axis", s.strafeAxis);
+  s.stickFullAt = std::max(0.5f, config.GetFloat("swbf2", "stick_full_at", s.stickFullAt));
+  s.saberSprint = config.GetInt("swbf2", "saber_sprint", 0) != 0;
+  s.treadmill = std::min(30.0f, std::max(0.0f, config.GetFloat("debug", "treadmill", 0.0f)));
+  ParseValueSpec("[swbf2] unit_crouched", config.GetString("swbf2", "unit_crouched"), s.crouched);
+  s.haveEnergy = config.GetAddress("swbf2", "unit_energy", s.energy);
+  s.energyFull = config.GetFloat("swbf2", "unit_energy_full", s.energyFull);
+  s.characterScale = std::min(4.0f, std::max(0.25f, config.GetFloat("swbf2", "character_scale", 1.0f)));
+  // "10 = 1.2, 12 = 0.9": a kit, and the scale for it
+  const std::string byKit = config.GetString("swbf2", "character_scale_kits");
+  for (const char* p = byKit.c_str(); *p;) {
+    int kit = 0, used = 0;
+    float scale = 0;
+    if (std::sscanf(p, " %d = %f%n", &kit, &scale, &used) == 2 && scale >= 0.25f && scale <= 4.0f) {
+      s.characterScaleKits.emplace_back(kit, scale);
+      p += used;
+    }
+    while (*p && *p != ',') ++p;
+    if (*p == ',') ++p;
+  }
   if (ParseValueSpec("[swbf2] view_toggle", config.GetString("swbf2", "view_toggle"), s.viewToggle) &&
       !s.viewToggle.haveOther) {
     log::Error("[swbf2] view_toggle needs two values to flip between, got \"%s\"", s.viewToggle.text.c_str());
@@ -211,6 +263,7 @@ Settings LoadSettings(const Config& config) {
   for (int i = 0; i < kAsks; ++i) {
     const std::string key = std::string(kAskNames[i]) + "_key";
     s.askKeys[i] = config.GetInt("swbf2", key.c_str(), 0);
+    s.askPads[i] = config.GetInt("swbf2", (std::string(kAskNames[i]) + "_pad").c_str(), 0);
     ParseValueSpec(kAskNames[i], config.GetString("swbf2", kAskNames[i]), s.asks[i]);
   }
   s.keepRunning = config.GetInt("swbf2", "keep_running", 0) != 0;
@@ -220,8 +273,15 @@ Settings LoadSettings(const Config& config) {
   s.functions.aim = config.GetInt("swbf2", "aim_function", s.functions.aim);
   s.zoomedBelow = config.GetFloat("swbf2", "zoomed_below_fov", s.zoomedBelow);
   s.functions.reload = config.GetInt("swbf2", "reload_function", s.functions.reload);
+  s.functions.ability = config.GetInt("swbf2", "ability_function", s.functions.ability);
+  s.functions.meleeAbility = config.GetInt("swbf2", "melee_ability_function", s.functions.meleeAbility);
+  s.functions.nextAbility = config.GetInt("swbf2", "next_ability_function", s.functions.nextAbility);
+  s.functions.nextWeapon = config.GetInt("swbf2", "next_weapon_function", s.functions.nextWeapon);
   input::SetFunctions(s.functions);
   s.haveViewProjection = config.GetAddress("swbf2", "view_projection", s.viewProjection);
+  s.haveKit = config.GetAddress("swbf2", "unit_kit", s.kit);
+  s.haveWeapons = config.GetAddress("swbf2", "unit_weapons", s.weapons);
+  s.weaponState = config.GetInt("swbf2", "weapon_state_offset", s.weaponState);
   ParseValueSpec("[swbf2] third_person", config.GetString("swbf2", "third_person"), s.thirdPerson);
   s.followCamera = config.GetInt("swbf2", "follow_camera", 0) != 0;
 
@@ -407,6 +467,15 @@ void WawNow(const Settings& s, const WawPlayerState& latest, WawPose& pose) {
 // is still there, and builds up, unless it is replaced along the axes we own:
 // with nothing, or (follow_velocity) with the WaW player's own speed, so the
 // game has something to pick the unit's animation from.
+//
+// Not while an ability is being used, though. This game adds the thrower's
+// speed to whatever is thrown or launched, and WaW does not: a grenade thrown
+// on the run left the hand going sideways here and straight ahead there. So
+// for as long as the ability is in use, and a moment after, the unit is given
+// no speed at all. (The bridge thread says when: g_noSpeedUntil.)
+std::atomic<DWORD> g_noSpeedUntil{0};
+
+
 void SetVelocity(const Settings& s, const WawPose& pose) {
   const uintptr_t velocityAddr = mem::Resolve(s.velocity);
   float velocity[3];
@@ -420,12 +489,36 @@ void SetVelocity(const Settings& s, const WawPose& pose) {
     ++g_speedFrames;
   }
   Vec3 want{0, 0, 0};
-  if (s.followVelocity) want = WawVelocityToBf({pose.velocity[0], pose.velocity[1], pose.velocity[2]}, s.mapping);
+  const bool still = static_cast<int32_t>(GetTickCount() - g_noSpeedUntil.load(std::memory_order_relaxed)) < 0;
+  if (s.followVelocity && !still) want = WawVelocityToBf({pose.velocity[0], pose.velocity[1], pose.velocity[2]}, s.mapping);
+  const float facing = WawYawToBf(pose.yaw, s.mapping) * 3.14159265f / 180.0f;
+  const float fx = std::cos(facing), fz = s.mapping.zSign * std::sin(facing);
+  // [debug] treadmill = <metres a second>: with WaW's player standing still,
+  // the unit is told it is going forwards at that speed, and runs on the
+  // spot. For looking at its legs with nobody playing.
+  if (s.treadmill > 0 && s.followVelocity && !still && want.x * want.x + want.z * want.z < 0.01f) {
+    want.x = fx * s.treadmill;
+    want.z = fz * s.treadmill;
+  }
   velocity[0] = want.x;
   velocity[2] = want.z;
   if (s.followHeight) velocity[1] = want.y;
   g_haveLastSpeed = mem::WriteFloat3(velocityAddr, velocity);
   g_lastSpeed = std::sqrt(want.x * want.x + want.z * want.z);
+
+  // And the stick. The unit goes where it is put, whatever the stick says,
+  // but the game chooses how the character moves its legs from the stick:
+  // forwards, backwards or sideways, and it will not break into a sprint
+  // without "forward". So the stick is pushed the way WaW's player is really
+  // going, as far as their speed against a run.
+  if (s.forwardAxis >= 0 || s.strafeAxis >= 0) {
+    const auto push = [&s](float speed) {
+      const float part = std::min(1.0f, std::max(-1.0f, speed / s.stickFullAt));
+      return std::fabs(part) < 0.1f ? 0.0f : part;
+    };
+    input::SetAxis(s.forwardAxis, still ? 0.0f : push(want.x * fx + want.z * fz));
+    input::SetAxis(s.strafeAxis, still ? 0.0f : push(want.z * fx - want.x * fz));
+  }
 }
 
 void NoteWawCamera(const Settings& s, const WawPlayerState& waw);  // with the camera, below
@@ -517,6 +610,12 @@ WawCamera g_wawCamera;                     // guarded by g_mutex
 bool g_thirdPerson = false;                // guarded by g_mutex: the game's view is third person
 
 std::atomic<uint32_t> g_camerasReplaced{0};
+// How big the character is drawn in third person, 1 being as this game makes
+// it. This game's soldiers stand a good deal taller than WaW's zombies. The
+// character cannot be made smaller, but the camera can be put further from
+// it: every part of the picture then shrinks towards the character's feet,
+// which stay exactly where WaW's player stands.
+std::atomic<float> g_characterScale{1.0f};
 float g_gameZoom = 0;                      // guarded by g_mutex: the player's camera's own zoom, as last readied; 0 = not seen
 std::atomic<bool> g_logTransformCallers{false};  // [debug] transform_callers
 
@@ -527,6 +626,30 @@ bool Normalise(Vec3& v) {
   if (length < 1e-4f) return false;
   v = {v.x / length, v.y / length, v.z / length};
   return true;
+}
+
+// Which kit the character in play carries, or 0 if that cannot be told.
+//
+// The arena's mission script knows which class it put the player in the
+// world as, and this bridge cannot ask it. So the script writes the answer
+// where the bridge can read it: the unit's full health, which it sets to
+// 1e37 * (1 + kit / 1024). (The unit cannot be hurt; its health means nothing
+// else.) swbf2/arena/WAW_arena.lua has the other end.
+//
+// Two things about the character come with the kit, as numbers added to it.
+const uint32_t kKitNumber = 31;  // the kit itself is what is left under these
+const uint32_t kKitHero = 32;    // a hero or a villain: always shown from behind
+const uint32_t kKitMelee = 64;   // fights with a lightsaber
+std::atomic<bool> g_melee{false};
+
+uint32_t Kit(const Settings& s) {
+  if (!s.haveKit || !s.havePosition || !IsUnit(s, mem::Resolve(s.position))) return 0;
+  float full = 0;
+  const uintptr_t address = mem::Resolve(s.kit);
+  if (!address || !mem::Read(address, &full, sizeof(full))) return 0;
+  const float over = full / 1e37f - 1.0f;
+  if (!(over > -0.0001f && over < 0.25f)) return 0;  // not a health this arena set
+  return static_cast<uint32_t>(over * 1024.0f + 0.5f);
 }
 
 // Whether the game's view is third person.
@@ -606,7 +729,9 @@ void __cdecl OnCameraSetup(void*) {
   if (!Normalise(right)) return;
   const Vec3 up = Cross(right, forward);
   const Vec3 back{-forward.x, -forward.y, -forward.z};
-  const Vec3 at{unit[0] + g_wawCamera.offset.x, unit[1] + g_wawCamera.offset.y, unit[2] + g_wawCamera.offset.z};
+  const float further = 1.0f / g_characterScale.load(std::memory_order_relaxed);
+  const Vec3 at{unit[0] + g_wawCamera.offset.x * further, unit[1] + g_wawCamera.offset.y * further,
+                unit[2] + g_wawCamera.offset.z * further};
   const float placement[32] = {
       right.x, right.y, right.z, 0, up.x,    up.y,    up.z,    0,
       back.x,  back.y,  back.z,  0, at.x,    at.y,    at.z,    1,
@@ -710,6 +835,8 @@ void ApplyToggle(const ValueSpec& toggle) {
 // [swbf2] next_hero and the like: leaves the mission script its message. Like
 // everything else written through the unit's pointer, only when what the
 // pointer leads to is a soldier.
+DWORD g_changingSince = 0;  // the bridge thread's: when a change of character was asked for; 0 = none is under way
+
 void Ask(const Settings& s, int which) {
   const ValueSpec& ask = s.asks[which];
   if (!s.havePosition || !IsUnit(s, mem::Resolve(s.position))) {
@@ -719,6 +846,7 @@ void Ask(const Settings& s, int which) {
   const uintptr_t address = mem::Resolve(ask.address);
   if (address && WriteValue(ask, address, ask.value)) {
     log::Info("%s: asked", kAskNames[which]);
+    g_changingSince = GetTickCount() | 1;
   } else {
     log::Error("%s: could not write %s at 0x%p", kAskNames[which], TypeName(ask), reinterpret_cast<void*>(address));
   }
@@ -774,8 +902,103 @@ void ForwardButtons(SharedBlock* block) {
   uint32_t buttons = 0;
   if (block && WawAlive(block) && block->waw.read(waw) && ElapsedUs(waw.timeUs, NowUs()) < 300000) {
     buttons = waw.buttons;
+    // WaW counts the ammunition: a weapon that is empty there does not fire
+    // here either.
+    if (waw.flags & kWawDry) buttons &= ~kWawButtonFire;
+    // With a lightsaber there is nothing to aim, and the button that aims for
+    // everyone else (right click, the left trigger) works the Force, as it
+    // does in this game played by itself.
+    if (g_melee.load(std::memory_order_relaxed)) {
+      if (buttons & kWawButtonAim) buttons |= kWawButtonAbility;
+      buttons &= ~static_cast<uint32_t>(kWawButtonAim);
+    }
+    // And WaW's scripts say when there is an ability to use: a grenade or a
+    // rocket left.
+    if (!(waw.flags & kWawAbilityReady)) buttons &= ~kWawButtonAbility;
   }
   input::SetButtons(buttons);
+}
+
+// Puts the game's view behind the character if it is not there.
+void ShowFromBehind(const Settings& s) {
+  const uintptr_t address = s.thirdPerson.type ? mem::Resolve(s.thirdPerson.address) : 0;
+  double now = 0;
+  if (!address || !ReadValue(s.thirdPerson, address, now) || SameValue(s.thirdPerson, now, s.thirdPerson.value)) return;
+  if (WriteValue(s.thirdPerson, address, s.thirdPerson.value)) log::Info("view: a lightsaber is shown from behind; changed to third person");
+}
+
+// What the unit has in hand: the place, among its weapons, of the weapon and
+// of the ability, and whether the ability is in use this moment.
+struct InHand {
+  bool known = false;
+  uint32_t weapon = 0;
+  uint32_t ability = 0;   // 0: none (place 0 is always a weapon)
+  uintptr_t weaponAt = 0, abilityAt = 0;
+  bool weaponInUse = false, abilityInUse = false;
+  bool weaponCharging = false;  // held, building up to its shot (the bowcaster)
+  float chargeFull = 0;         // seconds it takes to charge all the way
+  uintptr_t clipAt = 0;         // where the weapon's magazine is kept: a float, the part of it that is left
+};
+
+// In a weapon (the Steam build; found with tools/probe/bfweapons.ps1):
+const size_t kWeaponCounter = 0x88;     // pointer to its count of ammunition
+const size_t kCounterClip = 0x10;       // in that: the part of the magazine left, 0 to 1
+const size_t kWeaponTimer = 0xB8;       // while charging: how long a full charge takes, seconds
+const uint32_t kWeaponFiring = 1;       // its state while a shot or a swing is under way
+const uint32_t kWeaponCharging = 3;     // and while it is held, charging
+
+InHand ReadInHand(const Settings& s) {
+  InHand hand;
+  if (!s.haveWeapons || !s.havePosition || !IsUnit(s, mem::Resolve(s.position))) return hand;
+  const uintptr_t table = mem::Resolve(s.weapons);
+  uint32_t weapons[8];
+  uint8_t places[2];
+  if (!table || !mem::Read(table, weapons, sizeof(weapons)) || !mem::Read(table + sizeof(weapons), places, sizeof(places))) return hand;
+  hand.known = true;
+  hand.weapon = places[0];
+  uint32_t state = 0;
+  if (places[0] < 8 && weapons[places[0]]) {
+    hand.weaponAt = weapons[places[0]];
+    // 1 is the shot or the swing itself; a lightsaber then spends longer in
+    // 5, recovering, and that is not a time for it to cut anything.
+    const bool read = mem::Read(hand.weaponAt + s.weaponState, &state, sizeof(state));
+    hand.weaponInUse = read && state == kWeaponFiring;
+    hand.weaponCharging = read && state == kWeaponCharging;
+    if (hand.weaponCharging) mem::Read(hand.weaponAt + kWeaponTimer, &hand.chargeFull, sizeof(hand.chargeFull));
+    uint32_t counter = 0;
+    if (mem::Read(hand.weaponAt + kWeaponCounter, &counter, sizeof(counter)) && counter > 0x10000) hand.clipAt = counter + kCounterClip;
+  }
+  if (places[1] < 8 && places[1] != places[0] && weapons[places[1]]) {
+    hand.ability = places[1];
+    hand.abilityAt = weapons[places[1]];
+    state = 0;
+    hand.abilityInUse = mem::Read(hand.abilityAt + s.weaponState, &state, sizeof(state)) && state != 0;
+  }
+  return hand;
+}
+
+// Keeps this game's weapon the one WaW's player has in hand: WaW's own
+// "change weapon" is what the player presses, and its scripts say which
+// weapon that left them holding. "Next weapon" is pressed here until the two
+// agree, a few times at most (a character with one weapon has nothing to
+// change to).
+void MatchWeapon(const SharedBlock* block, const InHand& hand) {
+  static uint32_t lastWanted = 0;
+  static int tries = 0;
+  static DWORD lastPress = 0;
+  WawPlayerState waw{};
+  if (!hand.known || !block->waw.read(waw) || !waw.weapon) return;
+  const uint32_t wanted = waw.weapon - 1;
+  if (wanted != lastWanted) {
+    lastWanted = wanted;
+    tries = 0;
+  }
+  const DWORD now = GetTickCount();
+  if (hand.weapon == wanted || tries >= 4 || now - lastPress < 700) return;
+  lastPress = now;
+  ++tries;
+  input::PressNextWeapon();
+  log::Info("weapon: WaW's player has weapon %u in hand and this game's unit weapon %u: pressing next weapon", wanted + 1, hand.weapon + 1);
 }
 
 // Tells the input hooks whether the game is zoomed in, which they need for
@@ -812,11 +1035,190 @@ void HookCamera(const Settings& s) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The thrown grenade
+//
+// Two games throw a grenade when the player throws one. WaW's is the real
+// one: it bounces off WaW's walls and floors, and its burst is what hurts.
+// This game's would fly through its own empty arena and come down somewhere
+// else. What is wanted of this game is the character throwing, not the
+// grenade (the user, 2026-10-09: "just have the BF animation, but throw the
+// grenade in WaW, no BF grenade is visible"). So the moment this game's
+// grenade leaves the hand it is put far below the floor and its fuse run
+// out, where nothing sees or hears it.
+//
+// (What was built first carried this game's grenade along WaW's instead,
+// putting it every frame where WaW's was and setting it off when WaW's went.
+// It worked as far as it was tried, which was not with a real throw; the
+// layout below is what it needs, if it is ever wanted back.)
+//
+// The grenade in flight is its own object (Steam build; found with
+// tools/probe/bfflying.ps1, docs/PHASE3.md has the layout). Nothing points
+// at it from the unit or the weapon, so it is looked for once, at the moment
+// the weapon lets go of it: the object whose first word is the grenade
+// class's and whose owner is the player's unit. The game keeps such things
+// in pools near each other, so the search is of the memory around the unit.
+// ---------------------------------------------------------------------------
+const uintptr_t kThrownClass = 0x3AD0F4;  // what a thrown grenade's first word points at, from where the exe is loaded (as unit_type is)
+const size_t kThrownFlags = 0x38;         // 1 in flight, 0x101 once it has come to rest
+const size_t kThrownFuse = 0x3C;          // seconds left, counted down only once it is at rest (0.6 to begin with)
+const size_t kThrownAge = 0x40;           // seconds since it was thrown
+const size_t kThrownPosition = 0x48;      // three floats; kThrownCopy and kThrownWas are the same a frame apart
+const size_t kThrownOwner = 0x54;         // the unit that threw it
+const size_t kThrownCopy = 0xC8;
+const size_t kThrownWas = 0xF0;
+const size_t kThrownSpeed = 0xFC;         // three floats, metres per second
+const size_t kThrownGravity = 0x12C;      // metres per second per second, negative; 0 at rest
+const size_t kThrownSize = 0x140;
+const uint32_t kThrownAtRest = 0x101;
+
+// What a search came across, for the log when it finds nothing.
+struct ThrownSeen {
+  int count = 0;          // objects of the grenade's class
+  uintptr_t owner = 0;    // the last one's owner
+  float age = 0;          // and age
+};
+
+uintptr_t ScanForThrown(uintptr_t from, uintptr_t to, uintptr_t wanted, uintptr_t owner, ThrownSeen* seen) {
+  __try {
+    for (uintptr_t at = (from + 3) & ~static_cast<uintptr_t>(3); at + kThrownSize <= to; at += 4) {
+      if (*reinterpret_cast<const uint32_t*>(at) != wanted) continue;
+      ++seen->count;
+      seen->owner = *reinterpret_cast<const uint32_t*>(at + kThrownOwner);
+      seen->age = *reinterpret_cast<const float*>(at + kThrownAge);
+      if (seen->owner == owner && seen->age >= 0.0f && seen->age < 1.0f) return at;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  return 0;
+}
+
+// Looks through the memory within `reach` of `middle`. Around the unit, 32 MB
+// either way takes some 20 ms; around where the last one was, a megabyte
+// takes under one.
+uintptr_t FindThrown(uintptr_t unit, uintptr_t middle, uintptr_t reach, ThrownSeen* seen) {
+  const uintptr_t wanted = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + kThrownClass;
+  uintptr_t at = middle > reach + 0x10000 ? middle - reach : 0x10000;
+  const uintptr_t end = middle + reach;
+  while (at < end) {
+    MEMORY_BASIC_INFORMATION info{};
+    if (!VirtualQuery(reinterpret_cast<void*>(at), &info, sizeof(info))) break;
+    const uintptr_t from = reinterpret_cast<uintptr_t>(info.BaseAddress), size = info.RegionSize;
+    if (info.State == MEM_COMMIT && (info.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) && !(info.Protect & PAGE_GUARD)) {
+      const uintptr_t found = ScanForThrown(std::max(from, at), std::min(from + size, end), wanted, unit, seen);
+      if (found) return found;
+    }
+    if (from + size <= at) break;
+    at = from + size;
+  }
+  return 0;
+}
+
+DWORD g_seekThrownFrom = 0;            // an ability was used then, and what it threw is being looked for; 0 = no (the game thread's, like the rest)
+int g_seekThrownLooks = 0;             // how many wide searches that has had
+bool g_abilityWasInUse = false;
+uintptr_t g_thrownLastAt = 0;          // where the last one was found: the next is usually the same place or beside it
+uintptr_t g_nothingThrownBy = 0;       // an ability weapon that was used and threw nothing (a rocket, the Force)
+
+// Call with g_mutex held, once a frame, from the game's own thread.
+void PutGrenadeAway(const Settings& s) {
+  const uintptr_t positionAddr = s.havePosition ? mem::Resolve(s.position) : 0;
+  if (!positionAddr || !IsUnit(s, positionAddr)) {
+    g_seekThrownFrom = 0;
+    g_abilityWasInUse = false;
+    return;
+  }
+  const uintptr_t unit = positionAddr - static_cast<uintptr_t>(s.unitPositionOffset);
+  const DWORD now = GetTickCount();
+
+  // An ability has just been used. If it is a grenade, it leaves the hand
+  // about half a second later, and is then looked for: every frame around
+  // where the last one was, which costs nothing, and a few times, spaced out,
+  // through everything near the unit, which costs a frame of this game's each
+  // time. An ability that turns out to throw nothing is not looked for again.
+  const InHand hand = ReadInHand(s);
+  if (hand.abilityInUse && !g_abilityWasInUse && hand.abilityAt != g_nothingThrownBy) {
+    g_seekThrownFrom = now | 1;
+    g_seekThrownLooks = 0;
+  }
+  g_abilityWasInUse = hand.abilityInUse;
+  if (!g_seekThrownFrom) return;
+
+  const int32_t waited = static_cast<int32_t>(now - g_seekThrownFrom);
+  ThrownSeen seen;
+  uintptr_t found = g_thrownLastAt ? FindThrown(unit, g_thrownLastAt, 1u << 20, &seen) : 0;
+  if (!found && waited >= 400 + 120 * g_seekThrownLooks) {
+    ++g_seekThrownLooks;
+    found = FindThrown(unit, unit, 32u << 20, &seen);
+  }
+  if (found) {
+    g_thrownLastAt = found;
+    g_seekThrownFrom = 0;
+    // Far below the floor, still, weightless, at rest and its fuse all but
+    // run out: it bursts there on the game's next turn.
+    float at[3] = {0, 0, 0};
+    mem::ReadFloat3(positionAddr, at);
+    at[1] -= 1000.0f;
+    const float none[3] = {0, 0, 0};
+    const float weightless = 0.0f, fuse = 0.01f;
+    mem::Write(found + kThrownPosition, at, sizeof(at));
+    mem::Write(found + kThrownCopy, at, sizeof(at));
+    mem::Write(found + kThrownWas, at, sizeof(at));
+    mem::Write(found + kThrownSpeed, none, sizeof(none));
+    mem::Write(found + kThrownGravity, &weightless, sizeof(weightless));
+    mem::Write(found + kThrownFlags, &kThrownAtRest, sizeof(kThrownAtRest));
+    mem::Write(found + kThrownFuse, &fuse, sizeof(fuse));
+    static bool said = false;
+    if (!said) log::Info("grenade: this game's has left the hand (0x%p) and is put out of sight; so will the rest be", reinterpret_cast<void*>(found));
+    said = true;
+  } else if (g_seekThrownLooks >= 6) {
+    g_seekThrownFrom = 0;
+    g_nothingThrownBy = hand.abilityAt;
+    log::Info("grenade: nothing of the kind was thrown by that ability (%d of the kind were there; the last one's owner 0x%p, this unit 0x%p, its age %.2f s)",
+              seen.count, reinterpret_cast<void*>(seen.owner), reinterpret_cast<void*>(unit), seen.age);
+  }
+}
 void BridgeFrame() {
   ++g_frames;
   std::lock_guard<std::mutex> lock(g_mutex);
   HookCamera(g_settings);
   g_following = Follow(g_settings, g_block);
+  PutGrenadeAway(g_settings);
+  // The unit stands on the arena's floor and is only ever moved across it.
+  // If it is found well below (it has happened: a class setting that upset
+  // how units stand, and every one of them dropped through), it is put back,
+  // rather than left to fall for good with the player's character gone from
+  // the picture.
+  if (g_following && g_settings.havePosition && !g_settings.followHeight) {
+    const uintptr_t positionAt = mem::Resolve(g_settings.position);
+    float at[3];
+    if (positionAt && IsUnit(g_settings, positionAt) && mem::ReadFloat3(positionAt, at) && at[1] < g_settings.mapping.anchorBf.y - 4.0f) {
+      static DWORD lastSaid = 0;
+      const DWORD now = GetTickCount();
+      if (now - lastSaid > 5000) {
+        lastSaid = now;
+        log::Info("the unit was %.1f m below the floor; put back on it", g_settings.mapping.anchorBf.y - at[1]);
+      }
+      at[1] = g_settings.mapping.anchorBf.y + 0.3f;
+      mem::WriteFloat3(positionAt, at);
+      const uintptr_t velocityAt = g_settings.haveVelocity ? mem::Resolve(g_settings.velocity) : 0;
+      float speed[3];
+      if (velocityAt && mem::ReadFloat3(velocityAt, speed)) {
+        speed[1] = 0;
+        mem::WriteFloat3(velocityAt, speed);
+      }
+    }
+  }
+  // WaW decides how long the player can sprint. This game's own count of
+  // that (its energy, which sprinting spends) is kept full, so the character
+  // never drops out of a sprint WaW's player is still in.
+  if (g_following && g_settings.haveEnergy) {
+    const uintptr_t energyAt = mem::Resolve(g_settings.energy);
+    float energy = 0;
+    if (energyAt && mem::Read(energyAt, &energy, sizeof(energy)) && energy >= 0.0f && energy < g_settings.energyFull) {
+      mem::Write(energyAt, &g_settings.energyFull, sizeof(g_settings.energyFull));
+    }
+  }
   Hold(g_settings);
   ForwardButtons(g_block);
   TellZoom(g_settings);
@@ -911,13 +1313,18 @@ void BridgeMain(HMODULE self) {
     }
 
     // The key works whichever window has the keyboard: the player is in WaW.
-    const bool toggleKeyDown = settings.viewToggleKey && settings.viewToggle.type &&
-                               (GetAsyncKeyState(settings.viewToggleKey) & 0x8000) != 0;
+    bool anyPad = settings.viewTogglePad != 0;
+    for (int i = 0; i < kAsks; ++i) anyPad = anyPad || settings.askPads[i] != 0;
+    const uint32_t padButtons = anyPad ? pad::Buttons() : 0;
+    const bool toggleKeyDown = settings.viewToggle.type &&
+                               ((settings.viewToggleKey && (GetAsyncKeyState(settings.viewToggleKey) & 0x8000) != 0) ||
+                                (padButtons & static_cast<uint32_t>(settings.viewTogglePad)) != 0);
     if (toggleKeyDown && !toggleKeyWasDown) ApplyToggle(settings.viewToggle);
     toggleKeyWasDown = toggleKeyDown;
     for (int i = 0; i < kAsks; ++i) {
-      const bool down = settings.askKeys[i] && settings.asks[i].type &&
-                        (GetAsyncKeyState(settings.askKeys[i]) & 0x8000) != 0;
+      const bool down = settings.asks[i].type &&
+                        ((settings.askKeys[i] && (GetAsyncKeyState(settings.askKeys[i]) & 0x8000) != 0) ||
+                         (padButtons & static_cast<uint32_t>(settings.askPads[i])) != 0);
       if (down && !askKeyWasDown[i]) Ask(settings, i);
       askKeyWasDown[i] = down;
     }
@@ -937,6 +1344,158 @@ void BridgeMain(HMODULE self) {
 
     state.flags = following ? kBfFollowing : 0;
     if (thirdPerson) state.flags |= kBfThirdPerson;
+    const uint32_t says = Kit(settings);
+
+    // A change of character is not something to watch. The mission script
+    // takes the old unit away and puts the new one where it stood, which
+    // takes a few tenths of a second; from the asking until the new unit is
+    // there, the picture sent to WaW is empty, and WaW is told nothing has
+    // changed (it would otherwise drop out of third person and back, and take
+    // the player's weapons away and hand them back).
+    static bool changeSawNoUnit = false;
+    if (g_changingSince) {
+      if (!says) changeSawNoUnit = true;
+      // (The asking can be a moment later than `now`, which was read at the
+      // top of this turn of the loop: hence the signed difference.)
+      if ((changeSawNoUnit && says) || static_cast<int32_t>(now - g_changingSince) > 2000) {
+        g_changingSince = 0;
+        changeSawNoUnit = false;
+      }
+    }
+    const bool between = g_changingSince != 0 && !says;  // the old unit has gone and the new one is not there yet
+    overlay::SetBlank(g_changingSince != 0);
+
+    const bool melee = (says & kKitMelee) != 0;
+    state.kit = says & kKitNumber;
+    static uint32_t lastSays = ~0u;
+    if (says != lastSays) {
+      log::Info("kit: the character in play carries kit %u%s%s", state.kit, (says & kKitHero) ? ", is a hero" : "",
+                melee ? ", and fights with a lightsaber" : "");
+      lastSays = says;
+    }
+    // A character with a lightsaber is always shown from behind. Anyone with
+    // a weapon to aim is left in whichever view the player has chosen.
+    if (melee && !thirdPerson && following) ShowFromBehind(settings);
+    float scale = settings.characterScale;
+    for (const auto& kit : settings.characterScaleKits) {
+      if (kit.first == static_cast<int>(state.kit)) scale = kit.second;
+    }
+    g_characterScale.store(scale, std::memory_order_relaxed);
+    if (!between) {
+      g_melee = melee;
+      input::SetMelee(melee);
+    }
+
+    // The ability: which is selected, and each use of it.
+    const InHand hand = ReadInHand(settings);
+    static uintptr_t lastAbilityAt = 0;
+    static bool abilityWasInUse = false;
+    if (hand.abilityAt != lastAbilityAt) {
+      lastAbilityAt = hand.abilityAt;
+      abilityWasInUse = hand.abilityInUse;
+      if (hand.ability) log::Info("ability: weapon %u of the unit's is selected", hand.ability + 1);
+    } else if (hand.abilityInUse && !abilityWasInUse) {
+      ++state.abilityUses;
+      log::Info("ability: weapon %u used (%u so far)", hand.ability + 1, state.abilityUses);
+    }
+    abilityWasInUse = hand.abilityInUse;
+    state.ability = hand.ability;
+    if (hand.abilityInUse) {
+      state.flags |= kBfAbilityInUse;
+      g_noSpeedUntil.store(now + 300, std::memory_order_relaxed);
+    }
+    // And each use of the weapon in hand: for a lightsaber, each swing.
+    // A weapon that charges says how long a full charge takes while it is
+    // charging; how far it got is the time it was held against that.
+    static uintptr_t lastWeaponAt = 0;
+    static bool weaponWasInUse = false;
+    static DWORD chargingSince = 0;
+    static float chargeFull = 0;
+    if (hand.weaponAt != lastWeaponAt) {
+      lastWeaponAt = hand.weaponAt;
+      chargingSince = 0;
+    } else if (hand.weaponInUse && !weaponWasInUse) {
+      ++state.weaponUses;
+      state.weaponCharge = chargingSince && chargeFull > 0.05f
+                               ? std::min(1.0f, static_cast<float>(now - chargingSince) / (chargeFull * 1000.0f))
+                               : 0.0f;
+    }
+    if (hand.weaponCharging) {
+      if (!chargingSince) chargingSince = now | 1;
+      chargeFull = hand.chargeFull;
+    } else {
+      chargingSince = 0;
+    }
+    weaponWasInUse = hand.weaponInUse;
+    if (hand.weaponInUse) state.flags |= kBfWeaponInUse;
+
+
+    // WaW counts the ammunition, so this game's magazine is kept at WaW's:
+    // then the two run out together, and this game never stops to reload
+    // while WaW is still firing. And when WaW starts to reload, for whatever
+    // reason, so does this game. (Not written while this game's is empty: it
+    // is reloading, or about to.)
+    WawPlayerState waw{};
+    static bool wawWasReloading = false;
+    // The character crouches when WaW's player does, and sprints while they
+    // do. Crouch is a switch in this game: it is pressed whenever the unit is
+    // not the way WaW's player is, no more often than twice a second, and
+    // only once the two have disagreed for a moment: while the view changes,
+    // or the unit is still arriving, what the unit says about itself cannot
+    // be trusted for a frame or two, and a press made on the strength of it
+    // stands a crouched character up. Sprint is simply held.
+    if (peerAlive && following && shm.block()->waw.read(waw)) {
+      static DWORD lastCrouchPress = 0, apartSince = 0;
+      double posture = 0;
+      const uintptr_t postureAt = settings.crouched.type ? mem::Resolve(settings.crouched.address) : 0;
+      if (settings.crouchFunction >= 0 && postureAt && ReadValue(settings.crouched, postureAt, posture)) {
+        const bool crouched = (static_cast<uint32_t>(posture) & static_cast<uint32_t>(settings.crouched.value)) != 0;
+        if (crouched == ((waw.flags & kWawCrouching) != 0)) {
+          apartSince = 0;
+        } else if (!apartSince) {
+          apartSince = now | 1;
+        } else if (now - apartSince >= 150 && now - lastCrouchPress > 500) {
+          lastCrouchPress = now;
+          apartSince = 0;
+          input::HoldFor(settings.crouchFunction, 3);
+        }
+      }
+      // Not a character with a lightsaber, though. Its sprint in this game is
+      // a bounding run made for 22 metres a second, and the game paces a
+      // character's legs by the ground it really covers: at the 7 that WaW's
+      // player sprints at, a step took a second, whatever speed the unit was
+      // told it had (1, 2.5, 4 and 5 times WaW's were tried). Left to its
+      // ordinary run, made for 9, the same character takes a stride every
+      // 0.8 s at WaW's sprint. So that is what it does. ([swbf2] saber_sprint
+      // = 1 brings the game's own sprint back.)
+      const bool sprinting = (waw.flags & kWawSprinting) && settings.sprintFunction >= 0 && (!melee || settings.saberSprint);
+      input::SetHeld(sprinting ? 1u << settings.sprintFunction : 0);
+      // And jumps when they jump. How high is this game's own business: the
+      // camera goes up with the unit, so all that shows is the jump itself,
+      // against a room WaW is moving past as its own player rises.
+      static bool jumpWasHeld = false;
+      const bool jumpHeld = (waw.buttons & kWawButtonJump) != 0;
+      if (jumpHeld && !jumpWasHeld && settings.jumpFunction >= 0) input::HoldFor(settings.jumpFunction, 3);
+      jumpWasHeld = jumpHeld;
+    } else {
+      input::SetHeld(0);
+    }
+    // [debug] force_axis = <axis> <value>: pushes a stick axis, to find which is which.
+    if (settings.debugAxis >= 0) input::SetAxis(settings.debugAxis, settings.debugAxisValue);
+    if (peerAlive && hand.known && shm.block()->waw.read(waw) && waw.weapon == hand.weapon + 1) {
+      const bool reloading = (waw.flags & kWawReloading) != 0;
+      if (reloading && !wawWasReloading) input::PressReload();
+      wawWasReloading = reloading;
+      float have = 0;
+      if (hand.clipAt && waw.clipSize > 0 && !reloading && !(waw.flags & kWawDry) &&
+          mem::Read(hand.clipAt, &have, sizeof(have)) && have > 0.0f && have <= 1.0f) {
+        const float want = std::min(1.0f, static_cast<float>(waw.clip) / static_cast<float>(waw.clipSize));
+        if (std::fabs(have - want) > 0.5f / static_cast<float>(waw.clipSize)) mem::Write(hand.clipAt, &want, sizeof(want));
+      }
+    } else {
+      wawWasReloading = false;
+    }
+    if (peerAlive) MatchWeapon(shm.block(), hand);
     const uintptr_t positionAddr = settings.havePosition ? mem::Resolve(settings.position) : 0;
     if (positionAddr && mem::ReadFloat3(positionAddr, state.rawPosition)) {
       state.flags |= kBfPositionValid;
@@ -947,7 +1506,18 @@ void BridgeMain(HMODULE self) {
       state.positionInWaw[2] = w.z;
     }
     ++state.frame;
-    shm.block()->bf.write(state);
+    static BfPlayerState shown{};  // as last published with a unit in play
+    BfPlayerState out = state;
+    if (between) {
+      out.flags = shown.flags;
+      out.kit = shown.kit;
+      out.ability = shown.ability;
+      std::memcpy(out.rawPosition, shown.rawPosition, sizeof(out.rawPosition));
+      std::memcpy(out.positionInWaw, shown.positionInWaw, sizeof(out.positionInWaw));
+    } else {
+      shown = state;
+    }
+    shm.block()->bf.write(out);
 
     if (now - lastReport >= 1000) {
       lastReport = now;

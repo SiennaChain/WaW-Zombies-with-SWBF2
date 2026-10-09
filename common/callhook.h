@@ -29,4 +29,16 @@ using Handler = void(__cdecl*)(void* esi);
 // making the call).
 bool Install(uintptr_t site, const unsigned char expected[5], Handler handler);
 
+// The same, the other way round: the function the game meant to call is
+// called first, and the handler afterwards, to look at what it gave back or
+// to change it. The handler is given where the game's arguments to that call
+// sit on the stack (arguments[0] is the first), and the word just below them,
+// reinterpret_cast<uint32_t*>(arguments)[-1], is what the function returned,
+// which the game is then handed (changed, if the handler changed it).
+//
+// Only for a call whose caller takes the arguments off the stack again, and
+// that is never under way twice at once: the way back is kept in one place.
+using After = void(__cdecl*)(void** arguments);
+bool InstallAfter(uintptr_t site, const unsigned char expected[5], After handler);
+
 }  // namespace wawbf::callhook

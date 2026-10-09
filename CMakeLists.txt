@@ -20,12 +20,14 @@ if(WIN32)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
   add_library(wawbf_common STATIC
+    common/callhook.cpp
     common/config.cpp
     common/crashlog.cpp
     common/frameprobe.cpp
     common/log.cpp
     common/memory.cpp
     common/overlay.cpp
+    common/pad.cpp
     common/shm.cpp)
   target_link_libraries(wawbf_common PUBLIC wawbf_protocol)
   target_compile_definitions(wawbf_common PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
@@ -51,7 +53,7 @@ if(WIN32)
 
   wawbf_bridge(wawbf_waw waw)
   wawbf_bridge(wawbf_swbf2 swbf2)
-  target_sources(wawbf_swbf2 PRIVATE swbf2/src/callhook.cpp swbf2/src/focus.cpp swbf2/src/input.cpp)
+  target_sources(wawbf_swbf2 PRIVATE swbf2/src/focus.cpp swbf2/src/input.cpp)
 
   add_executable(wawbf_monitor tools/monitor/main.cpp)
   target_link_libraries(wawbf_monitor PRIVATE wawbf_protocol)

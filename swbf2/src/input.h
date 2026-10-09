@@ -37,6 +37,10 @@ struct Functions {
   int fire = 0;
   int aim = -1;
   int reload = -1;
+  int ability = -1;       // the character's ability: the game's "secondary fire"
+  int meleeAbility = -1;  // the same for a character with a lightsaber (see SetMelee)
+  int nextAbility = -1;   // selects the next ability
+  int nextWeapon = -1;    // takes the next weapon in hand
 };
 
 // Call every bridge tick with the current [swbf2] forward_fire setting. The
@@ -52,6 +56,34 @@ void SetButtons(uint32_t buttons);
 // False while aim must not zoom the game, whoever is holding it: the game is
 // then kept zoomed out. (In third person its zoom hides the character.)
 void SetAimAllowed(bool allowed);
+
+// True while the player's character fights with a lightsaber. The game gives
+// those their own buttons: its "secondary fire" raises the blade to block,
+// and the Force is worked by what is "reload" for everyone else. So the
+// ability button is sent to meleeAbility instead of ability, and reload is
+// not sent at all.
+void SetMelee(bool melee);
+
+// Presses "next weapon" once.
+void PressNextWeapon();
+
+// Holds reload for a moment: WaW has begun reloading, whatever started it
+// there (its button, or a magazine running out).
+void PressReload();
+
+// Holds any one function for this many of the game's updates: a press, for
+// the ones the game treats as a switch (crouch).
+void HoldFor(int function, int updates);
+
+// Functions held for as long as they are in this mask (sprint, while the WaW
+// player sprints).
+void SetHeld(uint32_t mask);
+
+// Pushes one of the game's four stick axes (the control state's floats: which
+// is which is in docs/PHASE3.md) to a value for as long as it is not zero.
+// The unit is moved by the bridge, not by the stick, but the game will not
+// break into a sprint unless the stick says "forward".
+void SetAxis(int axis, float value);
 
 // Whether the game is zoomed in now: 1, 0, or -1 for "cannot tell". Not
 // knowing, aim is pressed once each time WaW's changes, which stays right

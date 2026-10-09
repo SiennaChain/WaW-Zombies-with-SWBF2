@@ -60,9 +60,131 @@ local GIVE_UP_AFTER = 30           -- looks to wait for the old unit to go befor
 -- Where the player appears when there is no unit to take the place of.
 local SPAWN_PATH = "cp1_spawn"
 
+-- How far (metres, up being positive) a unit is moved before it is taken
+-- away, so that its going is not seen.
+local OUT_OF_SIGHT = -2000
+
+-- What each character carries, as a kit number. World at War hands its player
+-- the weapons that match the kit (waw/mod has that half, docs/PHASE3.md the
+-- list), so that what it shoots and what is seen here agree. A character not
+-- listed is kit 0, "not known", and World at War leaves its player alone.
+--
+-- The bridge cannot ask this script anything, and the game keeps no class
+-- names in memory for it to read. But it can read the unit's health, and
+-- nothing else uses that: full health is FULL_HEALTH * (1 + kit / 1024).
+local KIT = {
+    all_hero_hansolo_tat = 1,                                   -- a heavy pistol
+    rep_inf_ep3_rifleman = 2, imp_inf_rifleman = 2,             -- a blaster rifle and a pistol
+    cis_inf_marine       = 3,                                   -- a blaster rifle
+    imp_hero_bobafett    = 4,                                   -- a rifle that fires in bursts
+    all_hero_chewbacca   = 5,                                   -- the bowcaster
+    all_hero_leia        = 6,                                   -- a pistol that fires a beam
+    -- A lightsaber, and from here on the kit says which abilities go with it.
+    all_hero_luke_jedi   = 7, rep_hero_obiwan     = 7,          -- throwing it, and Force push
+    rep_hero_macewindu   = 7, cis_hero_darthmaul  = 7,
+    rep_hero_aalya       = 8,                                   -- throwing it, and Force pull
+    rep_hero_anakin      = 9, imp_hero_darthvader = 9,          -- throwing it, and Force choke
+    rep_hero_yoda        = 10,                                  -- Force pull and Force push
+    imp_hero_emperor     = 11, cis_hero_countdooku = 11,        -- Force lightning and Force choke
+    cis_hero_grievous    = 12,                                  -- nothing but the lightsabers
+}
+
+-- Two more things the bridge needs to know about the character go in with
+-- the kit, as numbers added to it:
+local IS_HERO = 32    -- a hero or a villain: always shown from behind
+local IS_MELEE = 64   -- fights with a lightsaber: its abilities are worked by a different button (docs/PHASE3.md)
+local FIRST_MELEE_KIT = 7
+
+-- What each character carries that it does not carry in the game as shipped.
+-- World at War has to be able to do whatever this game shows, so:
+--   - anything that is not a weapon, a grenade, a Force power or a thrown
+--     lightsaber goes (the fusion cutter, the rallying cries);
+--   - every charge and bomb becomes that side's grenade, which World at War
+--     matches with its own.
+-- A weapon is named by its place among the class's weapons. "" takes the
+-- weapon away.
+local CARRIES = {
+    all_hero_hansolo_tat = { [2] = "", [3] = "all_weap_inf_thermaldetonator", [4] = "" },
+    all_hero_chewbacca   = { [3] = "all_weap_inf_thermaldetonator", [4] = "" },
+    all_hero_leia        = { [3] = "" },
+    imp_hero_bobafett    = { [4] = "imp_weap_inf_thermaldetonator" },
+    cis_hero_grievous    = { [2] = "" },
+}
+
+-- World at War keeps count of the ammunition, the grenades and the rockets
+-- (they are bought at its walls), and stops this game using what it has run
+-- out of. So here every weapon that counts at all is given more than a
+-- session will use. The places are the class's weapons after CARRIES.
+local PLENTY = 99
+local COUNTED = {
+    all_hero_hansolo_tat = { 3 },
+    all_hero_chewbacca   = { 2, 3 },
+    all_hero_leia        = { 2 },
+    imp_hero_bobafett    = { 2, 3, 4 },
+    rep_inf_ep3_rifleman = { 3 },
+    imp_inf_rifleman     = { 3 },
+    cis_inf_marine       = { 2, 3 },
+}
+
+-- Recoil is World at War's. There a shot kicks the view, and the bridge has
+-- this game aim wherever that view really points. This game's own way of
+-- making a weapon harder to hold on target is to scatter its shots, more the
+-- longer it is fired; with both, a bolt drawn here would leave the line World
+-- at War's shot took. So every weapon the kits use is made to shoot straight.
+-- (The bowcaster's fan is a pattern, not scatter, and stays.)
+local STRAIGHT = {
+    "YawSpread", "PitchSpread", "SpreadPerShot", "SpreadLimit",
+    "StandStillSpread", "StandMoveSpread", "CrouchStillSpread", "CrouchMoveSpread",
+    "ProneStillSpread", "ProneMoveSpread",
+}
+local KIT_WEAPONS = {
+    "rep_weap_inf_rifle", "rep_weap_inf_pistol", "imp_weap_inf_rifle", "imp_weap_inf_pistol",
+    "cis_weap_inf_rifle", "cis_weap_inf_rocket_launcher",
+    "all_weap_hero_hanpistol", "all_weap_inf_bowcaster", "all_weap_hero_rocket_launcher",
+    "all_weap_hero_targetpistol", "imp_weap_hero_bobarifle", "imp_weap_hero_flamethrower",
+    "imp_weap_inf_wrist_rocket",
+}
+
+-- The crosshair in third person. This game's own camera looks down on the
+-- character from behind, some degrees below where the character is aiming
+-- (ten, as shipped), and draws the crosshair where the aim then falls in its
+-- picture: that many degrees above the middle. But the picture World at War
+-- is shown is drawn from World at War's camera, which looks along the aim,
+-- and there a shot lands in or near the middle. With no tilt this game's
+-- crosshair is in the middle too. (Exactly where a shot lands depends on how
+-- far off the target is and how steeply the player is looking down; the
+-- World at War bridge draws a small crosshair of its own at that point.)
+--
+-- 45 was tried, to send this game's crosshair off the top of the screen and
+-- leave only the bridge's. Every unit then fell through the floor from the
+-- moment it appeared: whatever else the game uses this number for, it is not
+-- only the camera. 0 and 10 are known to be safe.
+local CAMERA_TILT = 0
+
+-- How high each kind of character jumps is left as the game has it, and World
+-- at War's player is made to jump the same ([waw] jump_heights in its
+-- wawbf.ini, by kit). The Emperor jumps a metre higher than everyone else
+-- with a lightsaber, and shares a kit with Count Dooku; he is brought into
+-- line with the others.
+local JUMPS = { imp_hero_emperor = 3.5 }
+
 local arena = nil        -- the roster ArenaInit was given
 local chosen = { 1, 1 }  -- which of each team's characters the player is, or will be next
 local waiting = nil      -- { team =, place =, looks = } while the old unit goes away
+local playing = nil      -- the class the player was last put in the world as
+
+-- Full health for the character in play, with its kit in it.
+local function FullHealth()
+    local kit = (playing and KIT[playing]) or 0
+    local says = kit
+    if playing and string.find(playing, "_hero_", 1, true) then
+        says = says + IS_HERO
+    end
+    if kit >= FIRST_MELEE_KIT then
+        says = says + IS_MELEE
+    end
+    return FULL_HEALTH * (1 + says / 1024)
+end
 
 -- The shipped game keeps no log, so each step leaves a string in memory that
 -- tools/probe/bfluatrace.ps1 can look for.
@@ -87,6 +209,7 @@ end
 local function Appear(character, team, place)
     local class = arena.teams[team].classes[chosen[team]]
     Trace("appear-" .. class)
+    playing = class
     SelectCharacterTeam(character, team)
     SelectCharacterClass(character, class)
     SpawnCharacter(character, place or GetPathPoint(SPAWN_PATH, 0))
@@ -123,7 +246,7 @@ local function Look()
         if waiting.looks > GIVE_UP_AFTER then
             Trace("still-here")
             waiting = nil
-            SetProperty(unit, "CurHealth", FULL_HEALTH)
+            SetProperty(unit, "CurHealth", FullHealth())
         end
     else
         local asked = Asked(unit)
@@ -136,6 +259,11 @@ local function Look()
             end
             Trace("asked-" .. asked)
             waiting = { team = asked, place = GetEntityMatrix(unit), looks = 0 }
+            -- The only way to take a unit away is to kill it, and a unit that
+            -- dies falls over where it stands and may drop something. So it
+            -- is put far below the floor first: it dies, and drops whatever
+            -- it drops, where nothing looks.
+            SetEntityMatrix(unit, CreateMatrix(0, 0, 0, 0, 0, OUT_OF_SIGHT, 0, waiting.place))
             KillObject(unit)
         end
     end
@@ -156,8 +284,8 @@ function ArenaPostLoad()
             if IsCharacterHuman(character) then
                 local unit = GetCharacterUnit(character)
                 if unit then
-                    SetProperty(unit, "MaxHealth", FULL_HEALTH)
-                    SetProperty(unit, "CurHealth", FULL_HEALTH)
+                    SetProperty(unit, "MaxHealth", FullHealth())
+                    SetProperty(unit, "CurHealth", FullHealth())
                 end
             end
         end
@@ -237,6 +365,23 @@ function ArenaInit(roster)
             -- out" and also works, showing an infinity sign for the count;
             -- reloading by hand has only been checked with a real number.)
             SetClassProperty(class, "WeaponAmmo1", SPARE_MAGAZINES)
+            SetClassProperty(class, "TiltValue", CAMERA_TILT)
+            if JUMPS[class] then
+                SetClassProperty(class, "JumpHeight", JUMPS[class])
+            end
+            for place, weapon in pairs(CARRIES[class] or {}) do
+                SetClassProperty(class, "WeaponName" .. place, weapon)
+            end
+            for _, place in ipairs(COUNTED[class] or {}) do
+                SetClassProperty(class, "WeaponAmmo" .. place, PLENTY)
+            end
+        end
+    end
+
+    -- A weapon whose side this roster did not load is not there to change.
+    for _, weapon in ipairs(KIT_WEAPONS) do
+        for _, property in ipairs(STRAIGHT) do
+            pcall(SetClassProperty, weapon, property, 0)
         end
     end
 

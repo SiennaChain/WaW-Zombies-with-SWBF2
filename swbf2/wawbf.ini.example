@@ -87,6 +87,9 @@ view_projection = BattlefrontII.exe+0x3DE368
 ; view_toggle_key is a Windows virtual-key code: 0x78 = F9.
 view_toggle = BattlefrontII.exe+0x1AF9106 = u8 0 1
 view_toggle_key = 0x78
+; The same from a controller: XInput's number for the button (0x0001 up on the
+; d-pad, 0x0002 down, 0x0004 left, 0x0008 right). 0 = none.
+view_toggle_pad = 0x0008
 ; The view is third person while this address holds this value. WaW is told,
 ; so that it draws from behind the player as well and leaves its own soldier
 ; out. Same address as view_toggle. Format: <address> = <u8|u32|f32> <value>
@@ -108,6 +111,82 @@ next_hero = BattlefrontII.exe+0x1A296B0 > 0x24 = f32 9e36
 next_hero_key = 0x79
 next_villain = BattlefrontII.exe+0x1A296B0 > 0x24 = f32 8e36
 next_villain_key = 0x7A
+; And from a controller, as view_toggle_pad: up and down on the d-pad.
+next_hero_pad = 0x0001
+next_villain_pad = 0x0002
+; Third person: how big the character is drawn, 1 being as this game makes it.
+; Its soldiers stand well over the height of a WaW zombie. They cannot be
+; made smaller, but the camera is put further from them: everything shrinks
+; towards the character's feet, which stay where WaW's player stands.
+; character_scale_kits gives particular kits their own (kit = scale, ...):
+; 10 is Yoda, who is small enough already.
+character_scale = 0.88
+character_scale_kits = 10 = 1.0
+; Which kit the character carries, for WaW to hand its player the weapons
+; that match (docs/PHASE3.md). The arena's mission script knows the class and
+; the bridge cannot ask it, so the script writes the answer into the unit's
+; full health, which is what this address is: 1e37 * (1 + kit / 1024), with
+; 32 added to the kit for a hero and 64 for one with a lightsaber. A hero is
+; put in third person when the player becomes one, and one with a lightsaber
+; is kept there.
+unit_kit = BattlefrontII.exe+0x1A296B0 > 0x28
+; The unit's weapons: eight pointers, and straight after them a byte each for
+; which of the eight is in hand as the weapon and which as the ability (the
+; game's "secondary": a grenade, a rocket, a Force power). Found with
+; tools/probe/bfweapons.ps1. weapon_state_offset is where, in a weapon, a
+; number sits that is 0 while the weapon is idle; the bridge counts a use of
+; the ability each time the selected one's leaves 0, and WaW's scripts make
+; the same thing happen to the zombies.
+unit_weapons = BattlefrontII.exe+0x1A296B0 > 0x600
+weapon_state_offset = 0xB0
+; The functions behind the rest of what the WaW bridge sends (forward_fire
+; has to be 1; -1 = not passed on):
+;   ability_function        WaW's grenade button: "secondary fire", 1
+;   melee_ability_function  the same for a character with a lightsaber. The
+;                           game gives those their own buttons: its secondary
+;                           fire raises the blade to block, and the Force is
+;                           on what is reload for everyone else, 7. For them
+;                           WaW's aim button works it too, and reload is not
+;                           passed on.
+;   next_ability_function   the WaW bridge's "next ability" key and button, 15
+;   next_weapon_function    13. Nothing in WaW is bound to it: WaW's scripts
+;                           say which weapon the player has in hand there, and
+;                           the bridge presses this until the unit's agrees.
+ability_function = 1
+melee_ability_function = 7
+next_ability_function = 15
+next_weapon_function = 13
+; The character does what WaW's player does (docs/PHASE3.md):
+;   jump_function    3, pressed when WaW's jump is
+;   crouch_function  4. It is a switch in this game, so it is pressed whenever
+;                    the unit is not the way WaW's player is. unit_crouched
+;                    says how the unit is: crouched while that byte has those
+;                    bits set.
+;   sprint_function  2, held while WaW's player sprints.
+; The stick: the unit goes where the bridge puts it, but the game picks how
+; the character moves its legs from its stick, and will not sprint without
+; "forward". forward_axis and strafe_axis are which of the control state's
+; floats those are (+1 is forwards, +1 is to the left); the stick is pushed
+; the way WaW's player is really going, all the way at stick_full_at metres a
+; second (WaW's run). -1 leaves the stick alone.
+; unit_energy is what sprinting spends in this game; it is kept at
+; unit_energy_full, because WaW decides how long the player can sprint.
+jump_function = 3
+crouch_function = 4
+sprint_function = 2
+unit_crouched = BattlefrontII.exe+0x1A296B0 > 0x622 = u8 64
+forward_axis = 1
+strafe_axis = 0
+stick_full_at = 4.8
+; A character with a lightsaber is not told to sprint when WaW's player does.
+; The game paces a character's legs by the ground it really covers, and its
+; sprint for those characters is a bounding run made for 22 metres a second:
+; at the 7 WaW's player sprints at, a step took a whole second. Their
+; ordinary run, made for 9, takes a stride every 0.8 s at that speed, so that
+; is what they do instead. 1 = the game's own sprint for them as well.
+saber_sprint = 0
+unit_energy = BattlefrontII.exe+0x1A296B0 > 0x8F4
+unit_energy_full = 100
 
 [mapping]
 ; How WaW space maps onto BF space - see protocol/wawbf_protocol.h.
@@ -142,7 +221,14 @@ force_buttons = 0
 ; Hold game functions on directly, one bit each (0x1 = function 0, 0x2 =
 ; function 1, 0x4 = function 2 ...), for finding out which number does what.
 ; Needs forward_fire = 1.
-force_functions = 0
+force_functions = 0
+; Pushes one of the game's four stick axes to a value, to find which is which:
+;   force_axis = <axis 0-3> <value>
+force_axis =
+; treadmill = 4.8 : while WaW's player stands still the unit is told it is going
+; forwards at this speed (metres a second), and runs on the spot. For looking
+; at its legs with nobody playing. 0 or absent = off.
+treadmill = 0
 ; 1 = hook the Direct3D device's drawing calls so a frame can be recorded
 ; (read at start-up; publishing a picture switches it on by itself).
 frame_probe = 0
