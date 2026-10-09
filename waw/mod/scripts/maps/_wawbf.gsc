@@ -125,14 +125,15 @@ init()
 	level.wawbf_push_arc = 0.5;
 	level.wawbf_push_most = 4;
 	level.wawbf_push_damage = 1000;
-	// Pull brings zombies to the player instead: this many at most, to this
-	// far in front of them, at this speed. Only zombies that are already
-	// inside: one still on its way to a window has that to do first.
+	// Pull is push the other way: it kills as push does, and what it kills
+	// is thrown towards the player, harder the further off it was (between
+	// these two, for each unit of distance this much).
 	level.wawbf_pull_reach = 1575;
 	level.wawbf_pull_arc = 0.9;
 	level.wawbf_pull_most = 3;
-	level.wawbf_pull_to = 70;
-	level.wawbf_pull_speed = 1400;
+	level.wawbf_pull_throw_least = 160;
+	level.wawbf_pull_throw_most = 450;
+	level.wawbf_pull_throw_each = 0.5;
 	level.wawbf_choke_reach = 790;
 	level.wawbf_choke_arc = 0.94;
 	level.wawbf_choke_damage = 250;
@@ -602,53 +603,19 @@ use_ability( ability )
 		zombies = self in_front( level.wawbf_pull_reach, level.wawbf_pull_arc, level.wawbf_pull_most );
 		for( i = 0; i < zombies.size; i++ )
 		{
-			self thread pull( zombies[i], i );
+			here = ( self.origin[0] - zombies[i].origin[0], self.origin[1] - zombies[i].origin[1], 0 );
+			hard = Length( here ) * level.wawbf_pull_throw_each;
+			if( hard < level.wawbf_pull_throw_least )
+			{
+				hard = level.wawbf_pull_throw_least;
+			}
+			if( hard > level.wawbf_pull_throw_most )
+			{
+				hard = level.wawbf_pull_throw_most;
+			}
+			self hurt( zombies[i], level.wawbf_push_damage, VectorNormalize( here ) * hard + ( 0, 0, 70 ) );
 		}
 	}
-}
-
-// Brings a zombie to just in front of the player, where a lightsaber can
-// reach it. It is carried there: fastened to something that can be moved, and
-// let go at the other end. A zombie that has not yet come in through its
-// window is left alone; brought inside early it would only try to walk back
-// out to the window it was sent to.
-pull( zombie, place )
-{
-	if( !IsDefined( zombie ) || !IsAlive( zombie ) || !IsDefined( zombie.ignoreall ) || zombie.ignoreall || IsDefined( zombie.wawbf_pulled ) )
-	{
-		return;
-	}
-	angles = self GetPlayerAngles();
-	// Side by side when there is more than one, not all on the same spot.
-	across = ( place % 2 ) * 2 - 1;
-	if( place == 0 )
-	{
-		across = 0;
-	}
-	to = self.origin + AnglesToForward( ( 0, angles[1] + across * 35, 0 ) ) * level.wawbf_pull_to;
-	far = Distance( zombie.origin, to );
-	if( far < 40 )
-	{
-		return;
-	}
-	seconds = far / level.wawbf_pull_speed;
-	if( seconds < 0.2 )
-	{
-		seconds = 0.2;
-	}
-
-	zombie.wawbf_pulled = true;
-	carrier = Spawn( "script_origin", zombie.origin );
-	carrier.angles = zombie.angles;
-	zombie LinkTo( carrier );
-	carrier MoveTo( to, seconds, seconds * 0.3, 0 );
-	wait( seconds );
-	if( IsDefined( zombie ) )
-	{
-		zombie Unlink();
-		zombie.wawbf_pulled = undefined;
-	}
-	carrier Delete();
 }
 
 // Battlefront II's character is using the ability selected, and has been for
@@ -787,6 +754,7 @@ cut_down_after( zombie, seconds )
 	}
 	if( IsDefined( zombie ) && IsAlive( zombie ) )
 	{
+		zombie thread saber_gib( self );
 		zombie DoDamage( zombie.health + 666, zombie.origin, self );
 	}
 }
@@ -838,9 +806,46 @@ saber_cut()
 		{
 			continue;
 		}
-		// One blow kills, whatever the round.
+		// One blow kills, whatever the round, and takes something off.
+		zombie thread saber_gib( self );
 		zombie DoDamage( zombie.health + 666, zombie.origin, self );
 	}
+}
+
+// What a lightsaber takes off the zombie it kills: an arm, a leg, both legs,
+// the middle, or the head, by chance. The game does this itself for a zombie
+// killed by enough firepower, but by its own rules (three times in four, not
+// too soon after the last, and never for a hurt that comes from a script, as
+// this one does), and it makes its choice afresh as the zombie dies. So it is
+// done here, by the game's own routines, while the zombie is still standing:
+// one that has already lost something is then left as it is when it falls.
+// On its own thread: if the game objects to any of it, that is all that stops.
+saber_gib( player )
+{
+	if( !IsDefined( self ) || !IsAlive( self ) || !IsDefined( self.a ) )
+	{
+		return;
+	}
+	if( IsDefined( self.gibbed ) && self.gibbed )
+	{
+		return;
+	}
+	refs = [];
+	refs[refs.size] = "head";
+	refs[refs.size] = "right_arm";
+	refs[refs.size] = "left_arm";
+	refs[refs.size] = "guts";
+	refs[refs.size] = "no_legs";
+	refs[refs.size] = "right_leg";
+	refs[refs.size] = "left_leg";
+	ref = refs[RandomInt( refs.size )];
+	if( ref == "head" )
+	{
+		self maps\_zombiemode_spawner::zombie_head_gib( player );
+		return;
+	}
+	self.a.gib_ref = ref;
+	self thread animscripts\death::do_gib();
 }
 
 // ---------------------------------------------------------------------------

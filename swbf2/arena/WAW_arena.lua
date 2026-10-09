@@ -145,6 +145,16 @@ local KIT_WEAPONS = {
     "imp_weap_inf_wrist_rocket",
 }
 
+-- The firing sounds the Clone Wars troopers' weapons are given in a roster
+-- that mixes eras, where their own are not there to play (ScriptInit says
+-- why): the nearest thing the other era has.
+local BORROWED = {
+    rep_weap_inf_rifle           = "all_weap_inf_rifle_fire",
+    rep_weap_inf_pistol          = "all_weap_inf_pistol_fire",
+    cis_weap_inf_rifle           = "imp_weap_inf_rifle_fire",
+    cis_weap_inf_rocket_launcher = "imp_weap_inf_rocket_launcher_fire",
+}
+
 -- The crosshair in third person. This game's own camera looks down on the
 -- character from behind, some degrees below where the character is aiming
 -- (ten, as shipped), and draws the crosshair where the aim then falls in its
@@ -320,6 +330,14 @@ function ArenaInit(roster)
         ForceHumansOntoTeam1()
     end
 
+    -- Ours as well as the game's own. Ours is the same pack built from the mod
+    -- tools' sources with one change: the part of the HUD that shows the
+    -- weapons is higher up the screen, and every other part is off it
+    -- (build.ps1 says how). The game then has two HUDs, its own where it
+    -- always is and ours; the bridge lets only the place of our weapons be
+    -- drawn to ([overlay] hud_keep), and that is all that is seen of either.
+    -- (Ours alone would be simpler, and the game does not start with it.)
+    ReadDataFile("dc:ingame.lvl")
     ReadDataFile("ingame.lvl")
 
     SetMaxFlyHeight(40)
@@ -334,14 +352,20 @@ function ArenaInit(roster)
     SetMemoryPoolSize ("Combo::DamageSample",6000)  -- should be ~8-12x #Combo::Attack
     SetMemoryPoolSize ("Combo::Deflect",100)     -- should be ~1x #combo
 
-    -- A roster that mixes eras asks for "both", so that nobody is silent.
-    if roster.era ~= "cw" then
+    -- One era's sounds, and only one. Each era's pack for a planet carries
+    -- one bank of recordings, and the game takes in the first bank it is
+    -- given and no other: with both read, in either order and from this
+    -- planet's file or another's, only the first era's weapons were heard
+    -- (measured, each character firing in turn: the clone trooper's rifle at
+    -- a fifth of full scale read first and nothing read second, and the
+    -- stormtrooper's the other way about). A roster that mixes eras ("both")
+    -- gets the Empire's and the Alliance's, which is also the pack with every
+    -- hero's sounds in it, and its Clone Wars troopers borrow (BORROWED).
+    if roster.era == "cw" then
+        ReadDataFile("sound\\tat.lvl;tat2cw")
+    else
         ReadDataFile("sound\\tat.lvl;tat2gcw")
     end
-    if roster.era ~= "gcw" then
-        ReadDataFile("sound\\tat.lvl;tat2cw")
-    end
-
     for _, side in ipairs(roster.sides) do
         ReadDataFile("SIDE\\" .. side[1] .. ".lvl", unpack(side[2]))
     end
@@ -382,6 +406,11 @@ function ArenaInit(roster)
     for _, weapon in ipairs(KIT_WEAPONS) do
         for _, property in ipairs(STRAIGHT) do
             pcall(SetClassProperty, weapon, property, 0)
+        end
+    end
+    if roster.era == "both" then
+        for weapon, sound in pairs(BORROWED) do
+            pcall(SetClassProperty, weapon, "FireSound", sound)
         end
     end
 
@@ -425,38 +454,19 @@ function ArenaInit(roster)
     ScriptCB_EnableHeroMusic(0)
     ScriptCB_EnableHeroVO(0)
 
-    if roster.era == "cw" then
-        voiceSlow = OpenAudioStream("sound\\global.lvl", "rep_unit_vo_slow")
-        AudioStreamAppendSegments("sound\\global.lvl", "cis_unit_vo_slow", voiceSlow)
-        AudioStreamAppendSegments("sound\\global.lvl", "des_unit_vo_slow", voiceSlow)
-        AudioStreamAppendSegments("sound\\global.lvl", "global_vo_slow", voiceSlow)
-
-        voiceQuick = OpenAudioStream("sound\\global.lvl", "rep_unit_vo_quick")
-        AudioStreamAppendSegments("sound\\global.lvl", "cis_unit_vo_quick", voiceQuick)
-
-        OpenAudioStream("sound\\global.lvl",  "cw_music")
-    else
-        voiceSlow = OpenAudioStream("sound\\global.lvl", "all_unit_vo_slow")
-        AudioStreamAppendSegments("sound\\global.lvl", "imp_unit_vo_slow", voiceSlow)
-        if roster.era == "both" then
-            AudioStreamAppendSegments("sound\\global.lvl", "rep_unit_vo_slow", voiceSlow)
-            AudioStreamAppendSegments("sound\\global.lvl", "cis_unit_vo_slow", voiceSlow)
+    -- Nothing is opened to play music, the soldiers' chatter or Tatooine's
+    -- wind: World at War is the game being played, and what is wanted of this
+    -- one's sound is its weapons (which come with the sides' own sound files,
+    -- read above), now that it can be heard at all (the bridge keeps its
+    -- sound playing while another window has the keyboard). And the levels
+    -- are set to match: effects and the master all the way up, music and both
+    -- kinds of talk off, whatever the player's profile for this game says.
+    if ScriptCB_GetVolumes and ScriptCB_SetVolumes then
+        local music, effects, voice, chatter, most, master = ScriptCB_GetVolumes()
+        if most then
+            ScriptCB_SetVolumes(0, most, 0, 0, most)
         end
-        AudioStreamAppendSegments("sound\\global.lvl", "des_unit_vo_slow", voiceSlow)
-        AudioStreamAppendSegments("sound\\global.lvl", "global_vo_slow", voiceSlow)
-
-        voiceQuick = OpenAudioStream("sound\\global.lvl",  "all_unit_vo_quick")
-        AudioStreamAppendSegments("sound\\global.lvl",  "imp_unit_vo_quick", voiceQuick)
-        if roster.era == "both" then
-            AudioStreamAppendSegments("sound\\global.lvl", "rep_unit_vo_quick", voiceQuick)
-            AudioStreamAppendSegments("sound\\global.lvl", "cis_unit_vo_quick", voiceQuick)
-        end
-
-        OpenAudioStream("sound\\global.lvl",  "gcw_music")
     end
-    OpenAudioStream("sound\\tat.lvl",  "tat2")
-    OpenAudioStream("sound\\tat.lvl",  "tat2")
-
     SetSoundEffect("ScopeDisplayZoomIn",  "binocularzoomin")
     SetSoundEffect("ScopeDisplayZoomOut", "binocularzoomout")
     SetSoundEffect("SpawnDisplayUnitChange",       "shell_select_unit")

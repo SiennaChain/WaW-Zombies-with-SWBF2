@@ -55,6 +55,11 @@ keep_running = 0
 ; 1 = do not show the game's window at all. It goes on drawing and playing.
 ; Can be switched live; leave it 0 while there are menus to click through.
 hidden = 0
+; 1 = this game is heard while another window is in front (it is otherwise
+; silent the moment it is not the one with the keyboard, which under World at
+; War is always). Only sounds the game makes after the bridge is loaded are
+; changed, so it takes a restart.
+sound_in_background = 1
 ; 1 = pull this game's trigger while the WaW player holds theirs. The game's
 ; "fire" is switched on inside the game itself, after it has read its own
 ; devices, so it does not matter what fire is bound to in this game's options
@@ -229,6 +234,9 @@ force_axis =
 ; forwards at this speed (metres a second), and runs on the spot. For looking
 ; at its legs with nobody playing. 0 or absent = off.
 treadmill = 0
+; log_sound = 1 : once a second, what each of the game's sound buffers is
+; doing (playing or not, how loud the game has set it).
+log_sound = 0
 ; 1 = hook the Direct3D device's drawing calls so a frame can be recorded
 ; (read at start-up; publishing a picture switches it on by itself).
 frame_probe = 0
@@ -264,6 +272,25 @@ transform_callers = 0
 ; See docs/PHASE2.md.
 publish = 0
 cut = 0
+; Two things of this game's own that the whole picture (cut = 0) leaves out.
+;
+; hide_ground: the arena has to have one square of terrain (the game will not
+; put the player into a world with none), and the game draws it wherever the
+; player is: a line of grass on the horizon. It is a strip of triangles,
+; always with this many corners and this many triangles; a draw call of
+; exactly that shape is skipped. Leave it out to draw everything.
+;
+; hud_keep: of this game's HUD only what falls in this part of the picture is
+; drawn (left, top, right, bottom, each 0 to 1 across or down it): the place
+; of the weapons and abilities, as the arena's build raises them (its
+; -HudLift has to agree with this). Everything else of the HUD, the game's
+; own crosshair included, is not drawn; while the game is zoomed in, nothing
+; of it is. hud_lens is how the HUD's part of the frame is known: the x scale
+; of the projection the game draws it through (1.7321 at 16:9). Leave
+; hud_keep out for the whole HUD.
+hide_ground = 81, 149
+hud_keep = 0, 0.57, 0.33, 0.745
+hud_lens = 1.7321
 
 [proxy]
 chain =

@@ -28,6 +28,7 @@
 #include "overlay.h"
 #include "pad.h"
 #include "shm.h"
+#include "sound.h"
 
 namespace wawbf {
 namespace {
@@ -147,6 +148,7 @@ struct Settings {
   bool haveViewProjection = false;
   bool keepRunning = false;
   bool hidden = false;
+  bool soundInBackground = true;  // [swbf2] sound_in_background: the game is heard while another window is in front
   bool forwardFire = false;      // pull this game's trigger when the WaW player pulls theirs
   ValueSpec asks[kAsks];         // what to write to ask the mission script for each of kAskNames
   int askKeys[kAsks] = {};       // and the key that asks (a Windows virtual-key code)
@@ -268,6 +270,7 @@ Settings LoadSettings(const Config& config) {
   }
   s.keepRunning = config.GetInt("swbf2", "keep_running", 0) != 0;
   s.hidden = config.GetInt("swbf2", "hidden", 0) != 0;
+  s.soundInBackground = config.GetInt("swbf2", "sound_in_background", 1) != 0;
   s.forwardFire = config.GetInt("swbf2", "forward_fire", 0) != 0;
   s.functions.fire = config.GetInt("swbf2", "fire_function", s.functions.fire);
   s.functions.aim = config.GetInt("swbf2", "aim_function", s.functions.aim);
@@ -1013,6 +1016,7 @@ void TellZoom(const Settings& s) {
   // While the camera is being given WaW's lens the field of view says
   // nothing about this game's zoom; the camera's own zoom factor does.
   if (g_gameZoom > 0) zoomed = g_gameZoom > 1.2f ? 1 : 0;
+  frameprobe::SetHudNone(zoomed == 1);  // zoomed in, the game draws a scope where the weapons were
   same = zoomed == last ? same + 1 : 0;
   last = zoomed;
   if (same < 3 || zoomed == told) return;
@@ -1233,6 +1237,8 @@ void BridgeMain(HMODULE self) {
 
   Config config(dir + L"wawbf.ini");
   Settings settings = LoadSettings(config);
+  // Before the game starts its own sound up: only sounds made after this play in the background.
+  if (settings.soundInBackground) sound::KeepPlaying();
   config.Changed();  // the load above is current; only later saves count
   // The picture for WaW (Phase 2), and the probe's own experiments. Publishing
   // needs the frame cut at the depth clear that comes before the first-person
@@ -1248,6 +1254,16 @@ void BridgeMain(HMODULE self) {
     frameprobe::SetCut(publish ? cut : config.GetInt("debug", "frame_cut", 0),
                        publish ? 0 : std::strtoul(config.GetString("debug", "frame_cut_colour", "0").c_str(), nullptr, 0));
     frameprobe::SetTransparentClears((publish && cut == 0) || config.GetInt("debug", "transparent_clears", 0) != 0);
+    // Two things of the game's own that the whole-frame picture leaves out
+    // (frameprobe.h): the one square of ground the arena has to have, and
+    // all of the HUD but the part that shows the weapons.
+    unsigned corners = 0, triangles = 0;
+    if (std::sscanf(config.GetString("overlay", "hide_ground").c_str(), " %u , %u", &corners, &triangles) != 2) corners = triangles = 0;
+    frameprobe::SetHiddenShape(corners, triangles);
+    float keep[4] = {0, 0, 1, 1};
+    const bool some = std::sscanf(config.GetString("overlay", "hud_keep").c_str(), " %f , %f , %f , %f", &keep[0], &keep[1], &keep[2], &keep[3]) == 4 &&
+                      keep[2] > keep[0] && keep[3] > keep[1];
+    frameprobe::SetHudKeep(some, keep[0], keep[1], keep[2], keep[3], config.GetFloat("overlay", "hud_lens", 1.7320508f));
     overlay::SetPublish(publish);
     input::SetForced(static_cast<uint32_t>(config.GetInt("debug", "force_buttons", 0)));
     input::SetForcedFunctions(std::strtoul(config.GetString("debug", "force_functions", "0").c_str(), nullptr, 0));
@@ -1521,6 +1537,8 @@ void BridgeMain(HMODULE self) {
 
     if (now - lastReport >= 1000) {
       lastReport = now;
+      sound::Report();
+      if (config.GetInt("debug", "log_sound", 0) != 0) sound::Describe();
       if (config.Changed()) {
         log::Info("wawbf.ini changed, reloading");
         const std::string previousPoke = settings.poke.text;

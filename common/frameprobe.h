@@ -57,6 +57,30 @@ void SetCut(int nth, unsigned long colour);
 // What the frame did not draw on then stays see-through.
 void SetTransparentClears(bool on);
 
+// Two more things the whole-frame picture is better without, both of them the
+// game's own and neither something it can be told to leave out.
+//
+// - The ground. A world cannot be built without a terrain, and with none of
+//   it switched on the game will not put the player into the world. So one
+//   small square is left on, and the game draws it (a strip of triangles,
+//   always the same number of corners and of triangles) wherever the player
+//   is: as a line of grass on the horizon. A draw call of a strip with
+//   exactly `vertices` corners and `primitives` triangles, before the frame
+//   reaches the HUD, is not made. 0, 0 for none.
+// - Most of the HUD. The game draws its HUD last, through a lens of its own
+//   that never changes (`lens`: the projection's x scale, 1.7321 at 16:9).
+//   From the first time that lens is set after the frame's second depth-only
+//   clear, every draw call is confined to one part of the picture (left,
+//   top, right, bottom, each 0 to 1 across or down it), and what the HUD
+//   would have drawn elsewhere is not drawn.
+void SetHiddenShape(unsigned vertices, unsigned primitives);
+void SetHudKeep(bool on, float left, float top, float right, float bottom, float lens);
+
+// While this is set, nothing of the HUD is drawn at all. For when the game
+// is zoomed in: it then draws its scope over the whole screen in place of the
+// weapons, and a corner of that is all that would show in the part kept.
+void SetHudNone(bool none);
+
 // Told of every SetTransform the game makes, on its rendering thread, before
 // the call goes through: which transform (D3DTS_VIEW is 2, D3DTS_WORLD 256),
 // and where in the game the call came from. A game sets these at fixed points

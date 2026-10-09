@@ -95,11 +95,12 @@ $Weapons = [ordered]@{
     swbf2_launcher = @{ from = 'panzerschrek'; set = [ordered]@{
         displayName = 'Rocket Launcher'; reloadTime = '4.0'; reloadEmptyTime = '4.0'; reloadAddTime = '3.0'
         startAmmo = '8'; maxAmmo = '8' } }
-    # Leia's sporting blaster: a beam, so it hits where it points at once. One every half second.
-    # Made from the Magnum as well, and given the same third of its kick as the DL-44.
-    swbf2_sporting = @{ from = 'sw_357'; kick = 0.35; set = [ordered]@{
-        displayName = 'Sporting Blaster'; fireType = 'Single Shot'; fireTime = '0.5'; adsSpread = '0'; adsAimPitch = '0'
-        damage = '300'; minDamage = '300'; clipSize = '12'; startAmmo = '240'; maxAmmo = '240' } }
+    # Leia's sporting blaster. Underneath it is this game's Ray Gun (the user's choice): its bolt,
+    # which flies and bursts where it lands, and its damage. One every half second and twelve to
+    # the magazine, as Battlefront II's has; and Battlefront II's sound, like every kit weapon.
+    swbf2_sporting = @{ from = 'ray_gun'; set = [ordered]@{
+        displayName = 'Sporting Blaster'; fireType = 'Single Shot'; fireTime = '0.5'
+        clipSize = '12'; startAmmo = '240'; maxAmmo = '240' } }
     # A lightsaber. Only a name on the screen: the swing is Battlefront II's, and the scripts cut
     # down what it reaches when the bridge says one has begun (_wawbf.gsc). Its own shot reaches
     # nothing and makes no sound, flash or mark. (It was first a short, wide blow that did the
@@ -147,6 +148,17 @@ foreach ($name in $Weapons.Keys) {
     foreach ($field in $spec.set.Keys) {
         if (-not $at.ContainsKey($field)) { throw "${name}: the stock weapon $($spec.from) has no field '$field'" }
         $parts[$at[$field]] = $spec.set[$field]
+    }
+    # The sound of a kit weapon is Battlefront II's, which is heard under this game now: its blasters
+    # for these, not a Magnum or an STG-44. So everything this game would play for the weapon itself
+    # is taken out: firing, running dry, reloading (the sounds the reload's own animation calls for
+    # as well, all but the knife's, which is this game's to do), bringing it up and putting it away,
+    # and a rocket's flight. What it hits is still heard here: this is the game it hits things in.
+    foreach ($field in @($at.Keys | Where-Object { $_ -match '^(fire|lastShot|emptyFire|reload|reloadEmpty|reloadStart|reloadEnd|rechamber|raise|firstRaise|putaway)Sound(Player)?$' -or $_ -eq 'projectileSound' })) {
+        $parts[$at[$field]] = ''
+    }
+    if ($at.ContainsKey('notetrackSoundMap')) {
+        $parts[$at['notetrackSoundMap']] = (($parts[$at['notetrackSoundMap']] -split "`r?`n") | Where-Object { $_ -match '^knife_' }) -join "`n"
     }
     # "kick" scales the weapon's recoil: how far a shot throws the view and the gun, hip and aimed.
     if ($spec.kick) {

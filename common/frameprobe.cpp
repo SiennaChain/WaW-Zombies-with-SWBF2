@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -74,6 +75,13 @@ std::atomic<int> g_cutNth{0};
 std::atomic<unsigned long> g_cutColour{0};
 int g_depthClears = 0;  // depth-only clears so far this frame; rendering thread only
 std::atomic<bool> g_transparentClears{false};  // SetTransparentClears
+std::atomic<unsigned> g_hiddenVertices{0}, g_hiddenPrimitives{0};  // SetHiddenShape
+std::atomic<bool> g_hudKeepOn{false};          // SetHudKeep
+std::atomic<float> g_hudKeep[4];               // left, top, right, bottom: parts of the picture
+std::atomic<float> g_hudLens{1.7320508f};
+std::atomic<bool> g_hudNone{false};            // SetHudNone
+bool g_hudPart = false;  // the frame has reached the HUD; rendering thread only
+RECT g_hudRect{};        // and the part of the picture it is confined to, in points; rendering thread only
 std::atomic<TransformObserver> g_transformObserver{nullptr};
 
 std::mutex g_requestMutex;       // guards the request below until the recording starts
@@ -208,6 +216,16 @@ std::string SampledTarget(IDirect3DDevice9* device) {
   return found;
 }
 
+// What the draw call about to be made draws, as its own arguments say: set by
+// each of the draw hooks while a frame is being recorded.
+std::string g_shape;
+
+void Shape(const char* how, D3DPRIMITIVETYPE type, UINT vertices, UINT primitives) {
+  char text[96];
+  std::snprintf(text, sizeof(text), "%s, kind %d, %u vertices, %u primitives", how, static_cast<int>(type), vertices, primitives);
+  g_shape = text;
+}
+
 // How the next draw call is set up, for the ones asked about by number.
 void DescribeDraw(IDirect3DDevice9* device) {
   DWORD blend = 0, source = 0, destination = 0, depthTest = 0, depthWrite = 0, write = 0xF, fvf = 0;
@@ -228,6 +246,12 @@ void DescribeDraw(IDirect3DDevice9* device) {
        source, destination, depthTest, depthWrite, (write & 7) ? "colour" : "no colour",
        (write & D3DCOLORWRITEENABLE_ALPHA) ? " and alpha" : "", vertexShader ? "shader" : "fixed",
        pixelShader ? "shader" : "fixed", fvf);
+  IDirect3DVertexBuffer9* stream = nullptr;
+  UINT offset = 0, stride = 0;
+  device->GetStreamSource(0, &stream, &offset, &stride);
+  Line("        %s; vertices of %u bytes; vertex shader %p, pixel shader %p", g_shape.c_str(), stride,
+       static_cast<void*>(vertexShader), static_cast<void*>(pixelShader));
+  if (stream) stream->Release();
   if (vertexShader) vertexShader->Release();
   if (pixelShader) pixelShader->Release();
 }
@@ -263,6 +287,36 @@ struct KeepAlpha {
     if (device) device->SetRenderState(D3DRS_COLORWRITEENABLE, before);
   }
 };
+
+// Whole-frame mode: once the frame has reached the HUD, each draw call is
+// confined to the part of the picture that is to be kept of it (SetHudKeep),
+// and put back as it was afterwards.
+struct HudOnly {
+  IDirect3DDevice9* device = nullptr;
+  DWORD was = FALSE;
+  RECT rectWas{};
+  explicit HudOnly(IDirect3DDevice9* d) {
+    if (!g_hudPart) return;
+    d->GetRenderState(D3DRS_SCISSORTESTENABLE, &was);
+    d->GetScissorRect(&rectWas);
+    d->SetScissorRect(&g_hudRect);
+    d->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+    device = d;
+  }
+  ~HudOnly() {
+    if (!device) return;
+    device->SetScissorRect(&rectWas);
+    device->SetRenderState(D3DRS_SCISSORTESTENABLE, was);
+  }
+};
+
+// Whole-frame mode: the one piece of ground the world has to have (SetHiddenShape).
+bool HiddenShape(D3DPRIMITIVETYPE type, UINT vertices, UINT primitives) {
+  const unsigned hidden = g_hiddenVertices.load(std::memory_order_relaxed);
+  return hidden != 0 && !g_hudPart && type == D3DPT_TRIANGLESTRIP && vertices == hidden &&
+         primitives == g_hiddenPrimitives.load(std::memory_order_relaxed) &&
+         g_transparentClears.load(std::memory_order_relaxed);
+}
 
 HRESULT WINAPI StretchRectHook(IDirect3DDevice9* self, IDirect3DSurface9* source, const RECT* sourceRect,
                                IDirect3DSurface9* destination, const RECT* destinationRect,
@@ -337,6 +391,27 @@ HRESULT WINAPI SetTransformHook(IDirect3DDevice9* self, D3DTRANSFORMSTATETYPE st
     Line("SetTransform projection: x scale %.4f, y scale %.4f, m33 %.5f, m43 %.4f, m34 %.1f", m->_11,
          m->_22, m->_33, m->_43, m->_34);
   }
+  // The HUD's own lens, after the world and the first-person weapon are done:
+  // from here to the end of the frame is the HUD.
+  if (state == D3DTS_PROJECTION && m && !g_hudPart && g_depthClears >= 2 &&
+      g_hudKeepOn.load(std::memory_order_relaxed) && g_transparentClears.load(std::memory_order_relaxed) &&
+      std::fabs(m->_11 - g_hudLens.load(std::memory_order_relaxed)) < 0.003f) {
+    IDirect3DSurface9* target = nullptr;
+    D3DSURFACE_DESC desc{};
+    if (SUCCEEDED(self->GetRenderTarget(0, &target)) && target) {
+      if (SUCCEEDED(target->GetDesc(&desc))) {
+        const float w = static_cast<float>(desc.Width), h = static_cast<float>(desc.Height);
+        g_hudRect.left = std::lround(g_hudKeep[0].load(std::memory_order_relaxed) * w);
+        g_hudRect.top = std::lround(g_hudKeep[1].load(std::memory_order_relaxed) * h);
+        g_hudRect.right = std::lround(g_hudKeep[2].load(std::memory_order_relaxed) * w);
+        g_hudRect.bottom = std::lround(g_hudKeep[3].load(std::memory_order_relaxed) * h);
+        if (g_hudNone.load(std::memory_order_relaxed)) g_hudRect = RECT{0, 0, 0, 0};
+        g_hudPart = true;
+        if (Recording()) Line("    the HUD from here: confined to %ld,%ld to %ld,%ld", g_hudRect.left, g_hudRect.top, g_hudRect.right, g_hudRect.bottom);
+      }
+      target->Release();
+    }
+  }
   return g_setTransform(self, state, m);
 }
 
@@ -350,30 +425,47 @@ HRESULT WINAPI SetViewportHook(IDirect3DDevice9* self, const D3DVIEWPORT9* viewp
 }
 
 HRESULT WINAPI DrawPrimitiveHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT start, UINT count) {
-  if (Recording()) BeforeDraw(self);
+  if (Recording()) {
+    Shape("in order", type, 0, count);
+    BeforeDraw(self);
+  }
   const KeepAlpha keep(self);
+  const HudOnly hud(self);
   return g_drawPrimitive(self, type, start, count);
 }
 
 HRESULT WINAPI DrawIndexedHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, INT baseVertex,
                                UINT minIndex, UINT vertices, UINT start, UINT count) {
-  if (Recording()) BeforeDraw(self);
+  if (Recording()) {
+    Shape("indexed", type, vertices, count);
+    BeforeDraw(self);
+  }
+  if (HiddenShape(type, vertices, count)) return D3D_OK;
   const KeepAlpha keep(self);
+  const HudOnly hud(self);
   return g_drawIndexed(self, type, baseVertex, minIndex, vertices, start, count);
 }
 
 HRESULT WINAPI DrawUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT count, const void* data,
                           UINT stride) {
-  if (Recording()) BeforeDraw(self);
+  if (Recording()) {
+    Shape("in order, handed over", type, 0, count);
+    BeforeDraw(self);
+  }
   const KeepAlpha keep(self);
+  const HudOnly hud(self);
   return g_drawUp(self, type, count, data, stride);
 }
 
 HRESULT WINAPI DrawIndexedUpHook(IDirect3DDevice9* self, D3DPRIMITIVETYPE type, UINT minIndex,
                                  UINT vertices, UINT count, const void* indices, D3DFORMAT format,
                                  const void* data, UINT stride) {
-  if (Recording()) BeforeDraw(self);
+  if (Recording()) {
+    Shape("indexed, handed over", type, vertices, count);
+    BeforeDraw(self);
+  }
   const KeepAlpha keep(self);
+  const HudOnly hud(self);
   return g_drawIndexedUp(self, type, minIndex, vertices, count, indices, format, data, stride);
 }
 
@@ -425,6 +517,33 @@ void SetCut(int nth, unsigned long colour) {
   }
 }
 
+void SetHiddenShape(unsigned vertices, unsigned primitives) {
+  g_hiddenPrimitives.store(primitives);
+  if (g_hiddenVertices.exchange(vertices) != vertices) {
+    if (vertices) {
+      log::Info("frame probe: a strip of %u corners and %u triangles is not drawn (the ground)", vertices, primitives);
+    } else {
+      log::Info("frame probe: every strip is drawn");
+    }
+  }
+}
+
+void SetHudKeep(bool on, float left, float top, float right, float bottom, float lens) {
+  const float keep[4] = {left, top, right, bottom};
+  bool changed = g_hudKeepOn.exchange(on) != on;
+  for (int i = 0; i < 4; ++i) changed = (g_hudKeep[i].exchange(keep[i]) != keep[i]) || changed;
+  g_hudLens.store(lens);
+  if (changed) {
+    if (on) {
+      log::Info("frame probe: of the HUD, only what falls in %.3f,%.3f to %.3f,%.3f of the picture is drawn", left, top, right, bottom);
+    } else {
+      log::Info("frame probe: the whole HUD is drawn");
+    }
+  }
+}
+
+void SetHudNone(bool none) { g_hudNone.store(none, std::memory_order_relaxed); }
+
 void SetTransparentClears(bool on) {
   if (g_transparentClears.exchange(on) != on) {
     log::Info(on ? "frame probe: every clear of a picture is to transparent black"
@@ -436,6 +555,7 @@ void SetTransformObserver(TransformObserver observer) { g_transformObserver.stor
 
 void OnPresent(IDirect3DDevice9* device) {
   g_depthClears = 0;
+  g_hudPart = false;
   const int state = g_state.load();
   if (state == 2) {
     Finish(device);

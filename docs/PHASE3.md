@@ -26,7 +26,12 @@ By the user, 2026-10-08 and 2026-10-09, in the order it came:
   and bombs all become grenades. Boba Fett's rockets stay.
 - Every character can step through its abilities: left on the d-pad, and a
   key. The Force is on right click or the left trigger.
-- Force pull brings zombies to the player.
+- Force pull is Force push the other way: it kills, and throws towards the
+  player. (First asked for as "brings zombies to the player", and built that
+  way; changed at the user's word.)
+- SWBF2's weapon sounds, not WaW's. Of SWBF2's HUD only the weapons and
+  abilities, raised clear of WaW's round number. A lightsaber's kills take
+  something off the zombie.
 - Reloads take the same time in both games.
 - A character with a lightsaber is always seen from behind; one with a gun
   stays in whichever view the player chose.
@@ -103,19 +108,25 @@ SWBF2's own numbers (its class files in the mod tools: `ShotDelay`,
 | `swbf2_rifle` | `stg44` | automatic | 0.18 s | 70 | 50 | 1.5 s | 0.17 to 0.2 s, 60 to 75, 50, 1.5 s |
 | `swbf2_pistol` | `walther` | single | 0.2 s | 45 | endless | | 0.2 s, 45, heat |
 | `swbf2_ee3` | `stg44` | 3-round burst | 0.08 s | 150 | 36 | 1.5 s | three at 0.08 s, 0.75 s between bursts, 150, 36, 1.5 s |
-| `swbf2_sporting` | `sw_357` | single | 0.5 s | 300 | endless | | a beam: 0.5 s, 300, heat |
+| `swbf2_sporting` | `ray_gun` | single | 0.5 s | the Ray Gun's | endless | | a beam: 0.5 s, 300, heat |
 | `swbf2_bowcaster` | `shotgun` | see "The bowcaster" | | | 35 | 1.75 s | 35, 1.75 s |
 | `swbf2_launcher` | `panzerschrek` | as stock | | as stock | 1 | 4.0 s | 1, 4.0 s |
 | `swbf2_saber` | `shotgun` | see "The lightsaber" | | none | endless | | |
 
-A bullet in WaW arrives at once, so Leia's beam needs nothing more than a
-single shot with no spread to it. The DL-44 has a third of the .357's kick
-(`kick = 0.35`, which scales every view and gun kick field), and so has
-Leia's sporting blaster, which is made from the same gun. Aimed, the .357 and
-the Walther also scatter their shots a little (`adsSpread` 1.15 degrees) and
-the .357 fires a touch off the line of sight (`adsAimPitch`), to suit sights
-that are not on the screen here; both are set to nothing, as the STG-44 the
-rifle is made from has them.
+The DL-44 has a third of the .357's kick (`kick = 0.35`, which scales every
+view and gun kick field). Aimed, the .357 and the Walther also scatter their
+shots a little (`adsSpread` 1.15 degrees) and the .357 fires a touch off the
+line of sight (`adsAimPitch`), to suit sights that are not on the screen
+here; both are set to nothing, as the STG-44 the rifle is made from has them.
+Leia's sporting blaster is the game's Ray Gun underneath, at the user's word:
+its bolt, which flies and bursts where it lands, and its damage, at SWBF2's
+half second a shot.
+
+**Their sound is SWBF2's.** Everything WaW would play for a kit weapon
+itself is taken out of its file by the build: firing, running dry,
+reloading (and the sounds the reload's animation calls for, all but the
+knife's), raising and putting away, a rocket's flight. What a shot hits is
+still WaW's to sound. "Sound" below has SWBF2's side of it.
 
 "Endless" weapons are topped up by the script and never reload
 (`level.wawbf_endless`); in SWBF2 they heat up instead, which WaW does not
@@ -321,14 +332,13 @@ damage is not: there the Force only knocks soldiers down.
 |---|---|---|---|---|
 | throw | 40 m, or the first wall | 1.1 m either side of its path | all | kills, as the blade gets there |
 | push | 20 m | 120° | 4 | 1000; a zombie it kills is thrown back |
-| pull | 40 m | 50° | 3 | carries each to just in front of the player |
+| pull | 40 m | 50° | 3 | 1000; a zombie it kills is thrown towards the player, harder the further off it was |
 | choke | 20 m | 40° | 1 | 250 every tenth of a second while held |
 | lightning | 15 m | 80° | 10 | 125 each every tenth of a second while held |
 
-Pull fastens the zombie to something that can be moved, moves that, and lets
-go (`pull`). Only zombies that are already inside (`ignoreall` is false once
-one has come through its window): one brought in early would walk back out
-to the window it was sent to.
+Pull first carried each zombie to just in front of the player, alive
+(fastened to something that can be moved, and let go there). The user asked
+for push the other way instead.
 
 All of it is in `level.wawbf_*` at the top of the script.
 
@@ -561,6 +571,109 @@ the menu either; that would need the picture drawn earlier in WaW's frame,
 before its own HUD, which would also put WaW's HUD and hints in front of the
 character where they belong.
 
+## Sound
+
+SWBF2 was never heard. It plays everything through DirectSound, which
+silences a program that is not the one in front unless a sound was created
+with "global focus", and the game never asks for that; under WaW it is never
+in front. Its level in Windows' mixer read 0.000 with a blaster firing.
+
+- **Heard in the background.** The SWBF2 bridge sends DirectSound's one
+  routine that creates a sound through its own, which adds the request
+  (`swbf2/src/sound.cpp`; `[swbf2] sound_in_background`). The game makes four
+  sounds in all and mixes everything into one of them itself (48 kHz, two
+  channels, a tenth of a second long, played round and round), so that is
+  all it takes.
+- **Loud enough.** The game's own levels were nearly off (1% of full scale
+  firing). The arena's script sets them: effects and the master all the way
+  up, music and both kinds of talk off (`ScriptCB_SetVolumes`). A
+  stormtrooper's rifle then reads 0.19 to 0.23.
+- **No music, chatter or wind.** The arena no longer opens the streams they
+  play from.
+- **WaW's own are taken out** of the kit weapons' files ("The WaW weapons").
+
+**One era's recordings only.** Each era's pack for a planet
+(`sound\tat.lvl;tat2gcw`) carries one bank of recordings and the definitions
+that use them, and the game takes in the first bank it is given and no
+other. Measured, each character firing in turn with the bridge holding the
+trigger (`[debug] force_functions`), loudest level in Windows' mixer:
+
+| Read, in this order | Clone | Droid | Stormtrooper | Han Solo |
+|---|---|---|---|---|
+| `tat2gcw`, `tat2cw` (as it was) | 0.003 | 0.004 | 0.19 | 0.05 |
+| `tat2gcw`, `kas2cw` | 0.003 | 0.004 | 0.19 | |
+| `kas2cw`, `tat2gcw` | 0.19 | | | 0.00 |
+| `tat2cw`, `tat2gcw` | 0.19 | 0.16 | 0.004 | 0.00 |
+| `tat2cw`, `kas2gcw` | 0.19 | 0.17 | 0.009 | |
+
+So a roster that mixes eras reads the Empire's and Alliance's pack, which is
+also the one with every hero's sounds (it is hero assault's), and the two
+Clone Wars troopers' weapons are given the other era's firing sounds
+(`BORROWED` in the arena's script: `FireSound` set on the weapon's class). The
+clone's rifle then reads 0.06 where it read 0.003. Their own cannot be had
+without building a bank that holds both, and the mod tools come with the
+lists of what goes in a bank but not the recordings. (Han Solo's and Leia's
+pistols are the same sound in SWBF2: both classes ask for the Alliance
+pistol's.)
+
+`tools/probe/audiopeak.ps1` reads the mixer. A pistol's reading is unsteady
+(held down, it does not always fire); a rifle's is not.
+
+## What is left of SWBF2's HUD
+
+Only the part that shows the weapons and abilities, raised clear of WaW's
+round number. WaW has its own health, points, round and crosshair.
+
+The HUD is laid out in a text file in the mod tools, a block for each part
+with a place on the screen. The arena's build raises the weapons' block and
+gives every other block a place far off the screen
+(`swbf2/arena/build.ps1`, `-HudLift`), and packs the result as this add-on's
+own `ingame.lvl`, which the mission reads before the game's. That alone does
+not do it:
+
+- read *instead of* the game's, ours crashes the game as it starts (it is
+  built from the tools' sources, which are not this build's);
+- read *as well*, the game has two HUDs, its own in full and ours.
+
+So both are read, and the bridge confines everything drawn in the HUD's part
+of the frame to the rectangle our weapons are in (`[overlay] hud_keep`, the
+scissor test; `frameprobe::SetHudKeep`). The HUD's part is found by its lens:
+the game draws it last, after its second depth-only clear, through a
+projection of its own that never changes (x scale 1.7321 at 16:9). While the
+game is zoomed in nothing of the HUD is drawn at all: it draws a scope over
+the whole screen then, and a corner of it showed in the rectangle.
+
+SWBF2's crosshair goes with the rest. From behind, the bridge's own marks
+where the shot goes; through the player's eyes there is WaW's.
+
+## The line on the horizon
+
+A thin olive line a quarter of the screen wide, on the horizon in one
+direction: the arena's one square of terrain, 64 m of grass 230 m from where
+the player stands, seen edge-on.
+
+- A world cannot be built without a terrain. With its "active" square made
+  empty the game loads and will not put the player into the world.
+- Where the square is taken from in the grid makes no difference to where it
+  is drawn: at the middle of the world. (It was "in a far corner".)
+- The far-scene range does not hide it. It is drawn in the near scene, and
+  again in the far one.
+
+So the bridge does not let it be drawn: it is a strip of triangles with 81
+corners and 149 triangles, three times in the world's part of each frame and
+once in the far scene's, and a draw call of exactly that shape before the
+HUD is skipped (`[overlay] hide_ground`; `frameprobe::SetHiddenShape`). Found
+with the frame recorder, which now says what each draw call draws
+(`[debug] frame_dump = name: 5, 6, 7`).
+
+## A lightsaber's kills
+
+Take something off: an arm, a leg, both legs, the middle or the head, by
+chance (`saber_gib`). The game does this itself for zombies killed by enough
+firepower, by rules a hurt from a script never meets, and chooses afresh as
+the zombie dies; so the script calls the game's own routines
+(`animscripts\death::do_gib`, `maps\_zombiemode_spawner::zombie_head_gib`)
+on the zombie while it is still standing, and then kills it.
 ## Testing
 
 Start WaW with `+set wawbf_god 1` and the player cannot be hurt.
@@ -597,12 +710,21 @@ logs while the user played:
 - SWBF2's grenade is found as it leaves the hand;
 - SWBF2's magazine follows WaW's (a round fired there is put back at once
   while WaW's is full);
-- the mod loads with no script errors.
+- the mod loads with no script errors;
+- SWBF2 is heard with another window in front, and how loud each character's
+  weapon is ("Sound");
+- of SWBF2's HUD only the weapons are drawn, above WaW's round number, and
+  the line on the horizon is gone (pictures of both windows, and a search of
+  them for a run of green).
 
 Not yet checked:
 
 - the bowcaster's charge reaching the script and its two shots;
-- Force pull carrying a zombie;
+- Force pull throwing what it kills towards the player; a lightsaber's kill
+  taking a limb or the head off (the game's own routines, called by the
+  script: no script error on loading, nobody has cut a zombie down yet);
+- Leia's Ray Gun; SWBF2's sound against WaW's by ear (the levels are
+  measured, below, not heard);
 - the reload pressed in SWBF2 when WaW reloads, and the two ending together;
 - that no SWBF2 grenade is ever seen (the first throw after SWBF2 starts was
   missed once before the search was changed);
@@ -650,7 +772,11 @@ Known gaps:
 - SWBF2 shows its own count beside the ability (99), not WaW's.
 - SWBF2's own HUD says the old character "died" at each change.
 - A rocket in SWBF2 flies through its own empty arena, not WaW's rooms.
-- WaW still plays its own gunfire for the weapons made from guns.
+- Chewbacca's second weapon is SWBF2's guided rocket: fired, the game hands
+  the player the rocket to steer, the character is not the thing followed
+  for a second or two, and WaW is told there is no kit for that long.
+- The clone trooper's and the battle droid's weapons fire with the other
+  era's sounds ("Sound").
 - The flamethrower's two halves work differently (heat against a magazine).
 - About every 10 to 20 s SWBF2's field of view reads 36 degrees for a second
   (its own zoom?); not looked into.

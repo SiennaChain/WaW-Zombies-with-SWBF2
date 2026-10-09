@@ -19,14 +19,21 @@
 # the mission starts it again. Rebuild with "none" for that.
 #
 # The arena draws nothing: no ground, no sky. Whatever Battlefront then puts
-# in its picture is the player's (their character, weapon, shots, HUD) and
-# the whole picture can be laid over World at War's. -Ground builds the
-# template's grass and sky back in, for looking at the game on its own.
+# in its picture is the player's (their character, weapon and shots, and what
+# is left of the HUD) and the whole picture can be laid over World at War's.
+# -Ground builds the template's grass and sky back in, for looking at the game
+# on its own.
+#
+# Of the HUD only the weapons and abilities are left, raised by -HudLift (a
+# part of the screen's height) to clear World at War's round number. -FullHud
+# keeps the game's own HUD where it is.
 param(
     [string]$ModTools = 'C:\BF2_ModTools',
     [string]$GameData = 'E:\SteamLibrary\steamapps\common\Star Wars Battlefront II Classic\GameData',
     [ValidateSet('gcw', 'cw', 'heroes', 'none')][string]$AutoStart = 'gcw',
     [switch]$Ground,
+    [double]$HudLift = 0.17,
+    [switch]$FullHud,
     [switch]$Fresh,
     [switch]$NoInstall
 )
@@ -135,8 +142,14 @@ foreach ($cfg in Get-ChildItem -LiteralPath (Join-Path $ModTools 'data\Common\Lo
 # drawn:
 #
 # - The terrain is kept, because every world the tools know has one, but its
-#   "active" square (the part that is compiled, drawn and stood on) is moved
-#   to eight cells in a far corner of the grid.
+#   "active" square (the part that is compiled, drawn and stood on) is cut
+#   down to eight cells. It cannot be none: with no terrain switched on the
+#   game loads and will not put the player into the world. And it is not out
+#   of sight: the game draws whatever is active at the middle of the world,
+#   wherever in the grid it was taken from, 230 m from where the player
+#   stands, where 64 m of grass seen edge-on was an olive line a quarter of
+#   the screen wide on the horizon. The bridge leaves that one strip of
+#   triangles out of the picture ([overlay] hide_ground in wawbf.ini).
 # - The player stands instead on the game's own invisible collision blocks
 #   (com_inv_col_64: a 64 m cube, its corner at the object's position), laid
 #   as a floor with their tops at height 0 around where the player appears.
@@ -158,7 +171,7 @@ $terHead = New-Object byte[] 16
 $fs = [IO.File]::OpenRead((Join-Path $templateWorld '@#$.TER')); [void]$fs.Read($terHead, 0, 16); $fs.Close()
 $active = [byte[]]$terHead[8..15]                       # four 16-bit cell numbers: left, top, right, bottom
 if (-not $Ground) {
-    $active = [byte[]](@(500, 500, 508, 508) | ForEach-Object { [BitConverter]::GetBytes([int16]$_) })
+    $active = [byte[]](@(120, 120, 128, 128) | ForEach-Object { [BitConverter]::GetBytes([int16]$_) })
     $centre = -218, 133; $tiles = 5; $size = 64         # the floor: 5 x 5 blocks around where cp1's spawn path is
     $floor = ''; $n = 0
     for ($i = 0; $i -lt $tiles; $i++) {
@@ -170,6 +183,10 @@ if (-not $Ground) {
     $wld = $wld.TrimEnd() + "`r`n" + $floor
     $sky = [regex]::Replace($sky, '(?s)DomeInfo\(\)\s*\{.*\}\s*$', '')
     $sky = [regex]::Replace($sky, '(?m)^(\s*)FogRange\(-100\.0, 600\.0\);', '$1FogRange(4990.0, 5000.0);')
+    # And nothing is drawn beyond a kilometre: the command posts are four away.
+
+    $sky = [regex]::Replace($sky, 'FarSceneRange\(5000\.0, 5000\.0\);', 'FarSceneRange(1000.0, 1000.0);')
+    $sky = [regex]::Replace($sky, 'FarSceneRange\(5000\.0\);', 'FarSceneRange(1000.0);')
     $cp = 0
     $conquest = [regex]::Replace($conquest, '(Object\("cp\d+", "com_bldg_controlzone", -?\d+\)\s*\{\s*ChildRotation\([^)]*\);\s*ChildPosition\()[^)]*\)', {
         param($m) $script:cp++; $m.Groups[1].Value + ('{0:F3}, 0.000, 4000.000)' -f (4000 + 16 * $script:cp)) })
@@ -185,6 +202,46 @@ try {
     if (-not [Linq.Enumerable]::SequenceEqual($now, $active)) { [void]$fs.Seek(8, 'Begin'); $fs.Write($active, 0, 8) }
 } finally { $fs.Close() }
 "world: $(if ($Ground) { 'the template''s ground and sky' } else { 'nothing drawn; an invisible floor of ' + ($tiles * $tiles) + ' blocks' })"
+
+# The HUD. The picture laid over World at War is the player's character,
+# weapon and shots, and of this game's HUD only what says which weapon and
+# which ability are in hand: World at War shows its own health, round, points
+# and crosshair. The HUD is laid out in a text file, one block for each part
+# of it, each with a place on the screen. The block for the weapons is kept
+# and raised (-HudLift, as a part of the screen's height: World at War's round
+# number is in the corner under it, and it has to clear the game's own block,
+# which is still there below it); every other block is given a place far off
+# the screen, where it is still there for the game to switch on and off but
+# is never drawn. The file is the tools' own, changed here every time, and
+# packed into this add-on's ingame.lvl, which the mission script reads before
+# the game's. The game's own HUD is then still drawn as well; the bridge
+# keeps all of it but the place of our weapons out of the picture
+# ([overlay] hud_keep in wawbf.ini, which has to agree with -HudLift).
+# -FullHud leaves the file as it was.
+$hudFile = 'Common\hud\PC\1playerhud.hud'
+$hud = $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $ModTools "data\$hudFile")))
+if (-not $FullHud) {
+    $block = ''; $placed = $true; $hidden = 0; $raised = 0
+    $hudLines = $hud -split "`r?`n"
+    for ($i = 0; $i -lt $hudLines.Count; $i++) {
+        if ($hudLines[$i] -match '^(\w+)\("([^"]+)"\)') { $block = $Matches[2]; $placed = ($Matches[1] -eq 'FileInfo'); continue }
+        if ($placed) { continue }
+        # a child's own block begins: this one had no place of its own
+        if ($hudLines[$i] -match '^\s+\w+\("[^"]*"\)\s*$' -and $i + 1 -lt $hudLines.Count -and $hudLines[$i + 1] -match '^\s+\{') { $placed = $true; continue }
+        if ($hudLines[$i] -match '^(\s+)Position\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*"Viewport"\s*\)') {
+            $placed = $true
+            if ($block -eq 'player1weaponinformation') {
+                $hudLines[$i] = '{0}Position({1}, {2:F6}, {3}, "Viewport")' -f $Matches[1], $Matches[2], ([double]$Matches[3] - $HudLift), $Matches[4]; $raised++
+            } else {
+                $hudLines[$i] = '{0}Position(-10.000000, -10.000000, {1}, "Viewport")' -f $Matches[1], $Matches[4]; $hidden++
+            }
+        }
+    }
+    if ($raised -ne 1 -or $hidden -lt 30) { throw "the HUD file is not laid out as this script expects (raised $raised, hidden $hidden)" }
+    $hud = $hudLines -join "`r`n"
+    "HUD: the weapons raised by $HudLift of the screen, $hidden other parts put off the screen"
+} else { 'HUD: the game''s own' }
+Write-IfChanged (Join-Path $proj $hudFile) $hud
 
 # Ours: the rosters (one mission each) with the script they share, the list of
 # missions to pack, and the script that registers the map and can start it.
@@ -255,6 +312,7 @@ try {
 $outputs = [ordered]@{
     (Join-Path $proj 'addme\munged\addme.script') = 'addme.script'
     (Join-Path $proj '_LVL_PC\core.lvl')          = 'data\_LVL_PC\core.lvl'      # the text: see strings.txt
+    (Join-Path $proj '_LVL_PC\ingame.lvl')        = 'data\_LVL_PC\ingame.lvl'    # the HUD, cut down
     (Join-Path $proj '_LVL_PC\mission.lvl')       = 'data\_LVL_PC\mission.lvl'
     (Join-Path $proj "_LVL_PC\$Id\$Id.lvl")       = "data\_LVL_PC\$Id\$Id.lvl"
 }
