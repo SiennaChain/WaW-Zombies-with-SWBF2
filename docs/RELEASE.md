@@ -316,3 +316,23 @@ is never shown, with every frame beyond World at War's thrown away.
   A long readback or present in Battlefront II's log says the graphics chip
   is the limit; a long upload or draw in World at War's says the picture's
   way in is; a worst frame far over the average says hitches, not a low rate.
+
+### Measured on that PC
+
+2880x1800, 2x anti-aliasing, Battlefront II's picture 1728x1080. World at War
+drew 182 frames a second in the map (its `com_maxfps` is 85 and does not hold
+it), and Battlefront II, not the window in front, got what was left: 18 to 43
+frames a second, 12 in an earlier game, with `readback` 10 to 40 ms. So it was
+not Battlefront II drawing too much, it was World at War, and the character
+moved at Battlefront II's rate.
+
+- **A frame cap for World at War.** `[overlay] max_fps` in its `wawbf.ini`,
+  as shipped the screen's refresh rate. With it World at War holds 60 and
+  Battlefront II gets 30 to 50 in the map (60 at its pause menu). Still short:
+  `readback` is 7 to 24 ms there. What is left to try is fewer pixels for World
+  at War on such a PC (the launcher starts it at the screen's own size), and
+  asking Windows for a higher graphics priority for Battlefront II.
+- **The controller did nothing.** World at War binds a controller's buttons
+  from its main menu, which the launcher skips; this player's settings had no
+  `BUTTON_` bound. The launcher now adds `+exec default_controller.cfg` (the
+  game's own) while that is so.

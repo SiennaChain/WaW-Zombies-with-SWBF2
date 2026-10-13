@@ -28,6 +28,7 @@
 #include "log.h"
 #include "memory.h"
 #include "overlay.h"
+#include "pace.h"
 #include "perf.h"
 #include "pad.h"
 #include "shm.h"
@@ -1495,6 +1496,21 @@ const session::Game& BridgeGame() { return session::kWaw; }
 
 void BridgeLoaded(HMODULE, bool) {}
 
+// [overlay] max_fps: the most frames a second this game draws (common/pace.h).
+// -1 is the screen's refresh rate, asked for again each time: the game changes
+// the screen's mode as it starts.
+void FrameCap(const Config& config) {
+  int fps = config.GetInt("overlay", "max_fps", -1);
+  if (fps < 0) {
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    fps = EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1
+              ? static_cast<int>(mode.dmDisplayFrequency)
+              : 60;
+  }
+  pace::Set(fps);
+}
+
 void BridgeMain(HMODULE self) {
   const std::wstring dir = ModuleDir(self);
   log::Init(dir + L"wawbf_waw.log");
@@ -1558,6 +1574,7 @@ void BridgeMain(HMODULE self) {
     if (now - lastReport >= 1000) {
       lastReport = now;
       perf::ReportEvery(config.GetInt("debug", "perf_seconds", 5));
+      FrameCap(config);
       SteadyCamera(settings);
       ShowHints(settings);
       ScoreboardAlone(settings);

@@ -418,6 +418,23 @@ void CloseBf(int patience = 60) {
   }
 }
 
+// The settings file of the player World at War last ran as.
+std::wstring WawConfig() {
+  std::string profile = ReadAll(WawData() + L"\\players\\profiles\\active.txt");
+  while (!profile.empty() && static_cast<unsigned char>(profile.back()) <= 32) profile.pop_back();
+  std::wstring folder(MultiByteToWideChar(CP_ACP, 0, profile.data(), static_cast<int>(profile.size()), nullptr, 0), L'\0');
+  if (!folder.empty()) MultiByteToWideChar(CP_ACP, 0, profile.data(), static_cast<int>(profile.size()), &folder[0], static_cast<int>(folder.size()));
+  return WawData() + L"\\players\\profiles\\" + folder + L"\\config.cfg";
+}
+
+// World at War binds a controller's buttons when the player turns the
+// controller on at its main menu, which is never seen here: a player who had
+// not done so before had a controller that did nothing at all (the first
+// player handed the release). Its own default_controller.cfg is what that
+// menu runs. It is only asked for while the settings have no button bound, so
+// bindings the player has changed since are left as they are.
+bool ControllerUnbound() { return ReadAll(WawConfig()).find("bind BUTTON_") == std::string::npos; }
+
 // The player's own name, back in World at War's settings.
 //
 // While they play, the player is called after their character (World at
@@ -432,11 +449,7 @@ void GiveNameBack(const std::wstring& wawDir) {
   std::string own = ReadAll(kept);
   own.erase(std::remove_if(own.begin(), own.end(), [](unsigned char c) { return c < 32 || c == '"' || c == ';' || c == '\\'; }), own.end());
   if (own.empty() || Running(session::kWaw.exe)) return;
-  std::string profile = ReadAll(WawData() + L"\\players\\profiles\\active.txt");
-  while (!profile.empty() && static_cast<unsigned char>(profile.back()) <= 32) profile.pop_back();
-  std::wstring folder(MultiByteToWideChar(CP_ACP, 0, profile.data(), static_cast<int>(profile.size()), nullptr, 0), L'\0');
-  if (!folder.empty()) MultiByteToWideChar(CP_ACP, 0, profile.data(), static_cast<int>(profile.size()), &folder[0], static_cast<int>(folder.size()));
-  const std::wstring config = WawData() + L"\\players\\profiles\\" + folder + L"\\config.cfg";
+  const std::wstring config = WawConfig();
   std::string text = ReadAll(config);
   const char* const line = "seta name \"";
   size_t at = text.find(line);
@@ -592,6 +605,10 @@ void Play(int which) {
   if (s.refresh > 0) arguments += L" +set r_displayRefresh \"" + std::to_wstring(s.refresh) + L" Hz\"";
   if (s.smoothing == 1 || s.smoothing == 2 || s.smoothing == 4) arguments += L" +set r_aasamples " + std::to_wstring(s.smoothing);
   if (s.sync == 0 || s.sync == 1) arguments += L" +set r_vsync " + std::to_wstring(s.sync);
+  if (ControllerUnbound()) {
+    arguments += L" +exec default_controller.cfg";
+    log::Info("controller: World at War has no button bound; it is told to run its own default_controller.cfg");
+  }
   if (!s.wawArgs.empty()) arguments += L" " + s.wawArgs;
   arguments += std::wstring(s.cheats ? L" +devmap " : L" +map ") + map.name;
   if (!Start(steam, arguments)) return Say(kFailed, L"Steam would not start World at War.");

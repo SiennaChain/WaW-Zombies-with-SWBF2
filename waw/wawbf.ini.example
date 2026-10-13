@@ -278,6 +278,14 @@ quit_at_menu = 1
 ; and shots, and what is kept of its HUD. Needs [overlay] publish = 1 on the
 ; SWBF2 side. Can be switched live.
 draw = 1
+; The most frames a second this game draws. Its own com_maxfps does not hold
+; it here, and every frame it draws beyond what the screen shows is graphics
+; time taken from SWBF2, whose picture is your character: on a PC with one
+; graphics chip for both games, how smoothly the character moves
+; (common/pace.h).
+; -1 = as many as the screen shows. 0 = no cap. A number = at most that many.
+; Can be changed live.
+max_fps = -1
 
 [proxy]
 ; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.

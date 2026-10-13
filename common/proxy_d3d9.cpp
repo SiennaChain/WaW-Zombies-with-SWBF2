@@ -90,7 +90,7 @@ HRESULT WINAPI PresentHook(void* self, const RECT* source, const RECT* destinati
     wawbf::perf::Scope timing(wawbf::perf::kPresent);
     result = g_realPresent(self, source, destination, window, dirtyRegion);
   }
-  // Battlefront II's frame cap (off unless its bridge has set one).
+  // The frame cap (off unless the game's bridge has set one).
   wawbf::pace::AfterPresent();
   return result;
 }
@@ -99,7 +99,11 @@ HRESULT WINAPI EndSceneHook(void* self) {
   Frame(2);
   // While the scene is still open: the other game's picture goes on last.
   wawbf::overlay::Draw(static_cast<IDirect3DDevice9*>(self));
-  return g_realEndScene(self);
+  const HRESULT result = g_realEndScene(self);
+  // World at War's frame cap: its Present cannot be hooked (above), so the wait
+  // is taken here, where its frames are counted.
+  if (g_frameSource.load(std::memory_order_relaxed) == 2) wawbf::pace::AfterPresent();
+  return result;
 }
 
 HRESULT WINAPI CreateDeviceHook(void* self, UINT adapter, DWORD type, HWND focus, DWORD behavior,
