@@ -24,4 +24,17 @@ inline uint32_t NowUs() {
   return static_cast<uint32_t>(seconds * 1000000 + remainder * 1000000 / frequency);
 }
 
+// Microseconds on the same counter, all 64 bits: for timing inside one process,
+// where a wrap would matter.
+inline int64_t NowUs64() {
+  static const LONGLONG frequency = [] {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return f.QuadPart;
+  }();
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return static_cast<int64_t>(now.QuadPart / frequency * 1000000 + now.QuadPart % frequency * 1000000 / frequency);
+}
+
 }  // namespace wawbf

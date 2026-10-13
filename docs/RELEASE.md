@@ -288,3 +288,31 @@ Not checked: any other PC, any other screen shape than 16:9 (`hud_lens` and
 antivirus other than this one's, Battlefront II from GOG (another exe: the
 launcher will refuse it), a window in place of fullscreen from the Settings
 window, and a resolution other than the screen's own.
+
+## Slow on another PC
+
+The first PC it was handed to, a Lenovo laptop (Core Ultra 7 355, its
+integrated graphics the only graphics, 32 GB), did not play it well. Not yet
+measured. The likeliest costs, from reading the code: Battlefront II's frame
+read back from the graphics chip and copied through main memory every frame
+(8 MB at 1080 lines), twice, by a chip that is also drawing World at War; and
+Battlefront II drawing as fast as it can, because nothing slows a window that
+is never shown, with every frame beyond World at War's thrown away.
+
+- **A frame cap.** `[overlay] max_fps` in Battlefront II's `wawbf.ini`
+  (`common/pace.h`). As shipped (-1) it draws as many frames as World at War
+  does and a tenth more, which World at War's bridge tells it through the
+  picture mapping (`FrameHeader::readerFrameUs`), and 60 a second while World
+  at War is not drawing. The wait is taken just after its Present, so its next
+  frame starts with World at War's newest position.
+- **Where the time goes.** Both bridges log a line every five seconds
+  (`[debug] perf_seconds`, `common/perf.h`): frames a second, average and
+  worst frame, and the mod's own parts of a frame, average/worst in ms:
+
+  ```
+  perf: 58.1 fps, frame 17.2 avg 41.0 worst | bridge 0.2/0.9 | readback 6.1/12.0 | copy 1.9/3.0 | present 3.0/9.1 | wait 2.0/4.1 (ms, over 5 s)
+  ```
+
+  A long readback or present in Battlefront II's log says the graphics chip
+  is the limit; a long upload or draw in World at War's says the picture's
+  way in is; a worst frame far over the average says hitches, not a low rate.

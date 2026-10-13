@@ -259,6 +259,12 @@ struct alignas(64) FrameHeader {
   uint32_t width[2];
   uint32_t height[2];
   uint32_t timeUs[2];              // when each was taken; compare with ElapsedUs
+  // Written by the reader (WaW) each frame it draws: its own average time per
+  // frame, and when it last said so. SWBF2 caps its frame rate by it
+  // (common/pace.h). These sit in what was padding, so a bridge from before
+  // them leaves them 0, which reads as "not known".
+  std::atomic<uint32_t> readerFrameUs;
+  std::atomic<uint32_t> readerSaidUs;
 };
 
 constexpr uint32_t kFrameMappingSize = 64 + 2 * kFrameMaxBytes;

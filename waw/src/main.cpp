@@ -28,6 +28,7 @@
 #include "log.h"
 #include "memory.h"
 #include "overlay.h"
+#include "perf.h"
 #include "pad.h"
 #include "shm.h"
 
@@ -1556,6 +1557,7 @@ void BridgeMain(HMODULE self) {
 
     if (now - lastReport >= 1000) {
       lastReport = now;
+      perf::ReportEvery(config.GetInt("debug", "perf_seconds", 5));
       SteadyCamera(settings);
       ShowHints(settings);
       ScoreboardAlone(settings);

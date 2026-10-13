@@ -284,6 +284,9 @@ draw = 1
 chain =
 
 [debug]
+; Every this many seconds, one line in the log of how fast the game is
+; drawing and where the time goes in a frame (common/perf.h). 0 = none.
+perf_seconds = 5
 ; 1 = log every change of the number at [waw] weapon_state.
 log_weapon_state = 0
 ; 1 = the player begins each map unable to be hurt, exactly as if "god" had
