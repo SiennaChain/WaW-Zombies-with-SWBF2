@@ -92,7 +92,7 @@ const UINT kStopped = WM_APP + 6; // the start was called off (Settings was pres
 const int kFirstButton = 100;
 const int kSettingsButton = 200;
 // The settings window's own: a box to tick, five lists, and two buttons.
-const int kFullscreenBox = 300, kModeList = 301, kRefreshList = 302, kSmoothList = 303, kSyncList = 304, kDetailList = 305, kSave = 306, kLeave = 307;
+const int kDisplayList = 300, kModeList = 301, kRefreshList = 302, kSmoothList = 303, kSyncList = 304, kDetailList = 305, kSave = 306, kLeave = 307;
 const UINT_PTR kPadTimer = 1;
 
 struct Settings {
@@ -694,8 +694,9 @@ void Pick(int which) {
 
 struct Mode {
   int width, height;
+  bool shown;  // the screen can be put into it; the rest are for a window only
 };
-std::vector<Mode> g_modes;  // the sizes the screen can show, largest first
+std::vector<Mode> g_modes;  // the sizes on offer, largest first
 std::vector<int> g_rates;   // and how many times a second it can show them
 
 void ListModes() {
@@ -706,8 +707,19 @@ void ListModes() {
   for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &mode); ++i) {
     if (mode.dmBitsPerPel < 32 || mode.dmPelsWidth < 800 || mode.dmPelsHeight < 600) continue;
     const int width = static_cast<int>(mode.dmPelsWidth), height = static_cast<int>(mode.dmPelsHeight), rate = static_cast<int>(mode.dmDisplayFrequency);
-    if (std::none_of(g_modes.begin(), g_modes.end(), [&](const Mode& m) { return m.width == width && m.height == height; })) g_modes.push_back({width, height});
+    if (std::none_of(g_modes.begin(), g_modes.end(), [&](const Mode& m) { return m.width == width && m.height == height; })) g_modes.push_back({width, height, true});
     if (rate > 1 && std::find(g_rates.begin(), g_rates.end(), rate) == g_rates.end()) g_rates.push_back(rate);
+  }
+  // A screen often owns up to few sizes, a laptop's sometimes only its own. A
+  // window can be any size, and one over the whole screen is stretched to it,
+  // so the usual smaller ones are offered as well, for a PC that is slow at
+  // the screen's own.
+  const int screenWidth = GetSystemMetrics(SM_CXSCREEN), screenHeight = GetSystemMetrics(SM_CYSCREEN);
+  const Mode usual[] = {{2560, 1600, false}, {2560, 1440, false}, {1920, 1200, false}, {1920, 1080, false}, {1680, 1050, false},
+                        {1600, 900, false},  {1440, 900, false},  {1366, 768, false},  {1280, 800, false},  {1280, 720, false}};
+  for (const Mode& u : usual) {
+    if (u.width > screenWidth || u.height > screenHeight) continue;
+    if (std::none_of(g_modes.begin(), g_modes.end(), [&](const Mode& m) { return m.width == u.width && m.height == u.height; })) g_modes.push_back(u);
   }
   std::sort(g_modes.begin(), g_modes.end(), [](const Mode& a, const Mode& b) { return a.width != b.width ? a.width > b.width : a.height > b.height; });
   std::sort(g_rates.begin(), g_rates.end());
@@ -739,9 +751,11 @@ void Keep(const wchar_t* key, int value) { WritePrivateProfileStringW(L"launcher
 
 void SaveSettings(HWND window) {
   const int mode = Picked(window, kModeList);  // 0: the screen's own; otherwise one more than its place in g_modes
-  const bool sized = mode > 0 && mode <= static_cast<int>(g_modes.size());
-  // Ticked, it stays the kind of fullscreen it was (1 is only ever written by hand).
-  Keep(L"fullscreen", IsDlgButtonChecked(window, kFullscreenBox) != BST_CHECKED ? 0 : g_settings.fullscreen && !g_settings.borderless ? 1 : 2);
+  const int display = Picked(window, kDisplayList);
+  // With the screen to itself, World at War can only have a size the screen
+  // can be put into: any other is kept as the screen's own.
+  const bool sized = mode > 0 && mode <= static_cast<int>(g_modes.size()) && (display != 1 || g_modes[mode - 1].shown);
+  Keep(L"fullscreen", display);
   Keep(L"width", sized ? g_modes[mode - 1].width : 0);
   Keep(L"height", sized ? g_modes[mode - 1].height : 0);
   Keep(L"waw_video", 1);
@@ -802,17 +816,20 @@ void OpenSettings() {
   if (!g_settingsWindow) return;
   const HWND w = g_settingsWindow;
 
-  Made(w, L"BUTTON", L"Fullscreen", BS_AUTOCHECKBOX | WS_TABSTOP, kFullscreenBox, 196, 20, 248, 24);
-  CheckDlgButton(w, kFullscreenBox, s.fullscreen ? BST_CHECKED : BST_UNCHECKED);
+  const int display = !s.fullscreen ? 0 : s.borderless ? 2 : 1;
+  HWND list = List(w, L"Display", kDisplayList, 0);
+  Offer(list, L"Windowed fullscreen", 2, display);
+  Offer(list, L"Fullscreen", 1, display);
+  Offer(list, L"Window", 0, display);
 
-  HWND list = List(w, L"Resolution", kModeList, 1);
+  list = List(w, L"Resolution", kModeList, 1);
   int chosen = 0;
   for (size_t i = 0; i < g_modes.size(); ++i) {
     if (g_modes[i].width == s.width && g_modes[i].height == s.height) chosen = static_cast<int>(i) + 1;
   }
   Offer(list, L"The screen's own (" + std::to_wstring(GetSystemMetrics(SM_CXSCREEN)) + L" x " + std::to_wstring(GetSystemMetrics(SM_CYSCREEN)) + L")", 0, chosen);
   for (size_t i = 0; i < g_modes.size(); ++i) {
-    Offer(list, std::to_wstring(g_modes[i].width) + L" x " + std::to_wstring(g_modes[i].height), static_cast<int>(i) + 1, chosen);
+    Offer(list, std::to_wstring(g_modes[i].width) + L" x " + std::to_wstring(g_modes[i].height) + (g_modes[i].shown ? L"" : L" (not Fullscreen)"), static_cast<int>(i) + 1, chosen);
   }
 
   const wchar_t* const own = L"As World at War has it";

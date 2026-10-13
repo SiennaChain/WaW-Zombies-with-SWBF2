@@ -66,7 +66,8 @@ Quick Revive machine stands opposite the weapon cabinet.
 
 SETTINGS
 --------
-It starts fullscreen, at the size of your screen.
+It starts as a window with no border over the whole screen, at the size of
+your screen.
 
 World at War only lets you change its video mode, refresh rate, anti-aliasing
 and "sync every frame" at its main menu, and this skips the main menu: in the
@@ -74,7 +75,7 @@ game's own Options they are greyed out. So they are in the launcher instead.
 Run "Settings.cmd", or press Settings in the launcher while it is loading
 (that stops the start; Save and play starts it again):
 
-    Fullscreen, or a window
+    Windowed fullscreen, fullscreen, or a window
     Resolution
     Refresh rate
     Anti-aliasing
