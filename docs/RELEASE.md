@@ -336,3 +336,14 @@ moved at Battlefront II's rate.
   from its main menu, which the launcher skips; this player's settings had no
   `BUTTON_` bound. The launcher now adds `+exec default_controller.cfg` (the
   game's own) while that is so.
+- **A window over the whole screen.** With the screen to itself (`r_fullscreen 1`)
+  World at War went black for good when its player switched to another
+  window. The launcher's `fullscreen = 2`, now what it ships with, starts it in
+  a window whose border its bridge takes off and which it lays over the screen
+  (`Borderless` in `waw/src/main.cpp`). A smaller width and height are stretched
+  to fill it.
+- **Fewer pixels, and graphics priority.** At 1920x1200 in that window, with
+  Battlefront II asking Windows for high graphics priority
+  (`pace::RaiseGraphicsPriority`), Battlefront II drew 56 to 66 frames a second
+  in the map, `readback` 5 ms. The two were tried together; which did how much
+  is not known.

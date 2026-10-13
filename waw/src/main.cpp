@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -1496,6 +1497,43 @@ const session::Game& BridgeGame() { return session::kWaw; }
 
 void BridgeLoaded(HMODULE, bool) {}
 
+// The launcher's "fullscreen = 2": the game was started in an ordinary window
+// and told so on its command line (+set wawbf_borderless 1). Its window loses
+// its border and is laid over the whole screen it is on. Whatever size the
+// game draws at, Direct3D stretches to the window. Looked at once a second,
+// because the game makes its window again when its video settings change.
+void Borderless() {
+  static const bool wanted = std::wcsstr(GetCommandLineW(), L"wawbf_borderless 1") != nullptr;
+  if (!wanted) return;
+  HWND found = nullptr;
+  EnumWindows(
+      [](HWND window, LPARAM out) -> BOOL {
+        DWORD process = 0;
+        GetWindowThreadProcessId(window, &process);
+        RECT r{};
+        if (process != GetCurrentProcessId() || !IsWindowVisible(window) || GetWindow(window, GW_OWNER) || !GetClientRect(window, &r) || r.right < 320) return TRUE;
+        *reinterpret_cast<HWND*>(out) = window;
+        return FALSE;
+      },
+      reinterpret_cast<LPARAM>(&found));
+  if (!found) return;
+  MONITORINFO monitor{};
+  monitor.cbSize = sizeof(monitor);
+  if (!GetMonitorInfoW(MonitorFromWindow(found, MONITOR_DEFAULTTONEAREST), &monitor)) return;
+  const RECT& screen = monitor.rcMonitor;
+  const LONG style = GetWindowLongW(found, GWL_STYLE);
+  RECT at{};
+  GetWindowRect(found, &at);
+  const LONG border = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+  if (!(style & border) && EqualRect(&at, &screen)) return;
+  RECT drawn{};
+  GetClientRect(found, &drawn);
+  SetWindowLongW(found, GWL_STYLE, (style & ~border) | WS_POPUP);
+  SetWindowLongW(found, GWL_EXSTYLE, GetWindowLongW(found, GWL_EXSTYLE) & ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_STATICEDGE));
+  SetWindowPos(found, nullptr, screen.left, screen.top, screen.right - screen.left, screen.bottom - screen.top, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+  log::Info("window: no border, a %ldx%ld picture over the whole %ldx%ld screen", drawn.right, drawn.bottom, screen.right - screen.left, screen.bottom - screen.top);
+}
+
 // [overlay] max_fps: the most frames a second this game draws (common/pace.h).
 // -1 is the screen's refresh rate, asked for again each time: the game changes
 // the screen's mode as it starts.
@@ -1575,6 +1613,7 @@ void BridgeMain(HMODULE self) {
       lastReport = now;
       perf::ReportEvery(config.GetInt("debug", "perf_seconds", 5));
       FrameCap(config);
+      Borderless();
       SteadyCamera(settings);
       ShowHints(settings);
       ScoreboardAlone(settings);

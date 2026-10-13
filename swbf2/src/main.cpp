@@ -1334,6 +1334,7 @@ void BridgeMain(HMODULE self) {
     g_crosshairKept.store(publish && some && crosshair, std::memory_order_relaxed);
     overlay::SetPublish(publish);
     pace::Set(config.GetInt("overlay", "max_fps", pace::kMatch));
+    pace::RaiseGraphicsPriority();
     input::SetForced(static_cast<uint32_t>(config.GetInt("debug", "force_buttons", 0)));
     input::SetForcedFunctions(std::strtoul(config.GetString("debug", "force_functions", "0").c_str(), nullptr, 0));
     g_logTransformCallers = config.GetInt("debug", "transform_callers", 0) != 0;

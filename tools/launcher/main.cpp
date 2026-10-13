@@ -97,7 +97,8 @@ const UINT_PTR kPadTimer = 1;
 
 struct Settings {
   std::wstring map;         // the map to start at once; empty: the only one installed, or ask
-  bool fullscreen = true;
+  bool fullscreen = true;   // World at War fills the screen
+  bool borderless = true;   // ...as a window with no border, the size of the screen, not with the screen to itself
   int width = 0, height = 0;  // World at War's picture; 0: the desktop's (a window: 1280 x 720)
   int refresh = 0;          // how often a second the screen is redrawn, fullscreen; 0: as World at War has it
   int smoothing = 0;        // anti-aliasing: 1 none, 2 or 4 samples; 0: as World at War has it
@@ -186,7 +187,8 @@ void LoadSettings() {
   const Config config(IniPath());
   Settings s;
   s.map = Wide(config.GetString("launcher", "map", ""));
-  s.fullscreen = config.GetInt("launcher", "fullscreen", 1) != 0;
+  s.fullscreen = config.GetInt("launcher", "fullscreen", 2) != 0;
+  s.borderless = config.GetInt("launcher", "fullscreen", 2) == 2;
   s.width = config.GetInt("launcher", "width", 0);
   s.height = config.GetInt("launcher", "height", 0);
   s.refresh = config.GetInt("launcher", "refresh", 0);
@@ -600,7 +602,14 @@ void Play(int which) {
   // never seen here: so it is told on the way in. (It remembers all of it, as
   // it would anything set in its own options.)
   if (s.wawVideo) {
-    arguments += std::wstring(L" +set r_fullscreen ") + (s.fullscreen ? L"1" : L"0") + L" +set r_mode " + std::to_wstring(width) + L"x" + std::to_wstring(height);
+    const bool whole = s.fullscreen && !s.borderless;
+    arguments += std::wstring(L" +set r_fullscreen ") + (whole ? L"1" : L"0") + L" +set r_mode " + std::to_wstring(width) + L"x" + std::to_wstring(height);
+    // A window over the whole screen: World at War makes an ordinary window
+    // and its bridge, which reads this off the command line, takes the border
+    // off and stretches it over the screen (waw/src/main.cpp, Borderless).
+    // With the screen to itself the game went black for good when its player
+    // switched to another window, and had to be ended from the Task Manager.
+    if (s.fullscreen && s.borderless) arguments += L" +set wawbf_borderless 1";
   }
   if (s.refresh > 0) arguments += L" +set r_displayRefresh \"" + std::to_wstring(s.refresh) + L" Hz\"";
   if (s.smoothing == 1 || s.smoothing == 2 || s.smoothing == 4) arguments += L" +set r_aasamples " + std::to_wstring(s.smoothing);
@@ -731,7 +740,8 @@ void Keep(const wchar_t* key, int value) { WritePrivateProfileStringW(L"launcher
 void SaveSettings(HWND window) {
   const int mode = Picked(window, kModeList);  // 0: the screen's own; otherwise one more than its place in g_modes
   const bool sized = mode > 0 && mode <= static_cast<int>(g_modes.size());
-  Keep(L"fullscreen", IsDlgButtonChecked(window, kFullscreenBox) == BST_CHECKED ? 1 : 0);
+  // Ticked, it stays the kind of fullscreen it was (1 is only ever written by hand).
+  Keep(L"fullscreen", IsDlgButtonChecked(window, kFullscreenBox) != BST_CHECKED ? 0 : g_settings.fullscreen && !g_settings.borderless ? 1 : 2);
   Keep(L"width", sized ? g_modes[mode - 1].width : 0);
   Keep(L"height", sized ? g_modes[mode - 1].height : 0);
   Keep(L"waw_video", 1);
@@ -740,7 +750,7 @@ void SaveSettings(HWND window) {
   Keep(L"sync_every_frame", Picked(window, kSyncList));
   Keep(L"swbf2_height", Picked(window, kDetailList));
   LoadSettings();
-  log::Info("settings saved: fullscreen %d, %d x %d, refresh %d, anti-aliasing %d, sync %d, Battlefront II %d lines", g_settings.fullscreen ? 1 : 0,
+  log::Info("settings saved: fullscreen %d, %d x %d, refresh %d, anti-aliasing %d, sync %d, Battlefront II %d lines", !g_settings.fullscreen ? 0 : g_settings.borderless ? 2 : 1,
             g_settings.width, g_settings.height, g_settings.refresh, g_settings.smoothing, g_settings.sync, g_settings.bfHeight);
 }
 

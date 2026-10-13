@@ -12,8 +12,13 @@
 ; them greyed out. So they are set here, and World at War is told them as it
 ; starts (and remembers them, as it would anything set in its own options).
 ;
-; 1 = World at War fills the screen. 0 = it runs in a window.
-fullscreen = 1
+; 2 = World at War fills the screen, as a window with no border: switching
+; to another program and back is safe. 1 = it has the screen to itself, as
+; its own fullscreen does (and has been seen to go black for good when
+; switched away from). 0 = it runs in an ordinary window.
+; With 2, a width and height smaller than the screen's are stretched to fill
+; it: fewer pixels to draw, on a PC that is slow at the screen's own.
+fullscreen = 2
 ; World at War's picture, in pixels. 0 = the size of the screen (or, in a
 ; window, 1280 x 720). It has to be a size the screen can show: one of the
 ; ones World at War offers in its own video options. The mod is made for

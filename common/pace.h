@@ -34,6 +34,11 @@ constexpr int kFallback = 60;  // with kMatch, while World at War is not drawing
 // fps > 0: at most that many frames a second. 0: no cap. kMatch: as above.
 void Set(int fps);
 
+// Battlefront II. Asks Windows to put this process's drawing ahead of other
+// programs' on the graphics card: its window is never the one in front, and
+// the one in front is otherwise served first. Once; later calls do nothing.
+void RaiseGraphicsPriority();
+
 // On the rendering thread, straight after each Present (World at War: each
 // EndScene, see proxy_d3d9.cpp).
 void AfterPresent();

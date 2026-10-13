@@ -58,6 +58,19 @@ void Set(int fps) {
   }
 }
 
+void RaiseGraphicsPriority() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  // Not in any header a game's build has: gdi32 exports it. 4 is
+  // D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH.
+  using Fn = LONG(WINAPI*)(HANDLE, int);
+  const HMODULE gdi = GetModuleHandleW(L"gdi32.dll");
+  const auto set = gdi ? reinterpret_cast<Fn>(reinterpret_cast<void*>(GetProcAddress(gdi, "D3DKMTSetProcessSchedulingPriorityClass"))) : nullptr;
+  const LONG status = set ? set(GetCurrentProcess(), 4) : -1;
+  log::Info(status == 0 ? "graphics priority: high" : "graphics priority: Windows would not raise it (0x%08lX)", static_cast<unsigned long>(status));
+}
+
 void AfterPresent() {
   const int fps = g_fps.load(std::memory_order_relaxed);
   if (fps == 0) {
