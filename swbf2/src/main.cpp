@@ -26,6 +26,8 @@
 #include "log.h"
 #include "memory.h"
 #include "overlay.h"
+#include "pace.h"
+#include "perf.h"
 #include "pad.h"
 #include "shm.h"
 #include "devices.h"
@@ -1331,6 +1333,7 @@ void BridgeMain(HMODULE self) {
     frameprobe::SetHudMiddle(some && crosshair, middle[0], middle[1], middle[2], middle[3]);
     g_crosshairKept.store(publish && some && crosshair, std::memory_order_relaxed);
     overlay::SetPublish(publish);
+    pace::Set(config.GetInt("overlay", "max_fps", pace::kMatch));
     input::SetForced(static_cast<uint32_t>(config.GetInt("debug", "force_buttons", 0)));
     input::SetForcedFunctions(std::strtoul(config.GetString("debug", "force_functions", "0").c_str(), nullptr, 0));
     g_logTransformCallers = config.GetInt("debug", "transform_callers", 0) != 0;
@@ -1660,6 +1663,7 @@ void BridgeMain(HMODULE self) {
 
     if (now - lastReport >= 1000) {
       lastReport = now;
+      perf::ReportEvery(config.GetInt("debug", "perf_seconds", 5));
       sound::Report();
       if (config.GetInt("debug", "log_sound", 0) != 0) sound::Describe();
       if (config.Changed()) {

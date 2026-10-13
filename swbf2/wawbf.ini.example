@@ -252,6 +252,9 @@ yaw_offset = 0
 pitch_sign = -1
 
 [debug]
+; Every this many seconds, one line in the log of how fast the game is
+; drawing and where the time goes in a frame (common/perf.h). 0 = none.
+perf_seconds = 5
 ; Writes one value into the game, once, each time this line is changed.
 ; For trying out a newly found address without building a new DLL.
 ; Format: <address> = <u8|u32|f32> <value>
@@ -315,6 +318,13 @@ transform_callers = 0
 ; See docs/PHASE2.md.
 publish = 1
 cut = 0
+; The most frames a second this game draws. Its window is never shown, so
+; nothing else slows it, and every frame beyond the ones WaW draws is thrown
+; away while taking graphics time from WaW: on a PC with one graphics chip
+; for both games, WaW's frame rate (common/pace.h).
+; -1 = as many as WaW draws, and a tenth more (60 while WaW is not drawing).
+; 0 = no cap. A number = at most that many.
+max_fps = -1
 ; Two things of this game's own that the whole picture (cut = 0) leaves out.
 ;
 ; hide_ground: the arena has to have one square of terrain (the game will not

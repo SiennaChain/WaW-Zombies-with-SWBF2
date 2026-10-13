@@ -9,6 +9,7 @@
 
 #include "clock.h"
 #include "log.h"
+#include "perf.h"
 #include "wawbf_protocol.h"
 
 namespace wawbf::overlay {
@@ -111,8 +112,14 @@ void Publish(IDirect3DDevice9* device) {
   }
 
   D3DLOCKED_RECT locked{};
-  if (SUCCEEDED(device->GetRenderTargetData(back, g_copy)) &&
-      SUCCEEDED(g_copy->LockRect(&locked, nullptr, D3DLOCK_READONLY))) {
+  // Reading the frame back makes this thread wait until the graphics card has
+  // finished drawing it: on a slow or shared one, the biggest cost here.
+  const int64_t readFrom = NowUs64();
+  const bool read = SUCCEEDED(device->GetRenderTargetData(back, g_copy)) &&
+                    SUCCEEDED(g_copy->LockRect(&locked, nullptr, D3DLOCK_READONLY));
+  perf::Add(perf::kReadback, NowUs64() - readFrom);
+  if (read) {
+    perf::Scope timing(perf::kCopy);
     const uint32_t slot = 1 - (g_header->front.load(std::memory_order_relaxed) & 1);
     BYTE* out = g_pixels[slot];
     const BYTE* in = static_cast<const BYTE*>(locked.pBits);
@@ -137,8 +144,18 @@ void Publish(IDirect3DDevice9* device) {
   back->Release();
 }
 
+uint32_t ReaderFrameUs() {
+  if (!g_header) return 0;
+  const uint32_t frameUs = g_header->readerFrameUs.load(std::memory_order_relaxed);
+  const uint32_t said = g_header->readerSaidUs.load(std::memory_order_relaxed);
+  return frameUs && ElapsedUs(said, NowUs()) < 1000000 ? frameUs : 0;
+}
+
 void Draw(IDirect3DDevice9* device) {
   if (!g_draw.load(std::memory_order_relaxed) || !OpenMapping()) return;
+  // For SWBF2's frame cap: how fast this game is drawing.
+  g_header->readerFrameUs.store(perf::FrameUs(), std::memory_order_relaxed);
+  g_header->readerSaidUs.store(NowUs(), std::memory_order_relaxed);
   if (g_header->magic.load(std::memory_order_acquire) != kFrameMagic) return;
   static bool saidOk = false;
 
@@ -180,6 +197,7 @@ void Draw(IDirect3DDevice9* device) {
     g_haveDrawn = false;
   }
   if (fresh || !g_haveDrawn) {
+    perf::Scope timing(perf::kUpload);
     D3DLOCKED_RECT locked{};
     if (FAILED(g_texture->LockRect(0, &locked, nullptr, 0))) return;
     const BYTE* in = g_pixels[slot];
@@ -192,6 +210,7 @@ void Draw(IDirect3DDevice9* device) {
 
   // Everything this changes is put back: the game keeps its own record of the
   // device's state and must not find it different.
+  perf::Scope timing(perf::kDraw);
   IDirect3DStateBlock9* saved = nullptr;
   if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
 

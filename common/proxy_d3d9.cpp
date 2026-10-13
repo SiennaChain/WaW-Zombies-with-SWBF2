@@ -21,6 +21,8 @@
 #include "log.h"
 #include "memory.h"
 #include "overlay.h"
+#include "pace.h"
+#include "perf.h"
 
 namespace {
 
@@ -73,6 +75,8 @@ void Frame(int source) {
   if (announced.exchange(source) != source) {
     wawbf::log::Info("frames are counted at %s", source == 1 ? "the device's Present" : "EndScene");
   }
+  wawbf::perf::Frame();
+  wawbf::perf::Scope timing(wawbf::perf::kBridge);
   wawbf::BridgeFrame();
 }
 
@@ -81,7 +85,14 @@ HRESULT WINAPI PresentHook(void* self, const RECT* source, const RECT* destinati
   wawbf::overlay::Publish(static_cast<IDirect3DDevice9*>(self));
   if (g_frameProbe) wawbf::frameprobe::OnPresent(static_cast<IDirect3DDevice9*>(self));
   Frame(1);
-  return g_realPresent(self, source, destination, window, dirtyRegion);
+  HRESULT result;
+  {
+    wawbf::perf::Scope timing(wawbf::perf::kPresent);
+    result = g_realPresent(self, source, destination, window, dirtyRegion);
+  }
+  // Battlefront II's frame cap (off unless its bridge has set one).
+  wawbf::pace::AfterPresent();
+  return result;
 }
 
 HRESULT WINAPI EndSceneHook(void* self) {

@@ -27,7 +27,9 @@ if(WIN32)
     common/log.cpp
     common/memory.cpp
     common/overlay.cpp
+    common/pace.cpp
     common/pad.cpp
+    common/perf.cpp
     common/session.cpp
     common/shm.cpp)
   target_link_libraries(wawbf_common PUBLIC wawbf_protocol)

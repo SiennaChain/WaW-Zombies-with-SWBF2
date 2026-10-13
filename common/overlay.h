@@ -26,6 +26,8 @@
 // not use.
 #pragma once
 
+#include <cstdint>
+
 struct IDirect3DDevice9;
 
 namespace wawbf::overlay {
@@ -38,6 +40,10 @@ void Publish(IDirect3DDevice9* device);
 // other side carries on as it was, but there is nothing in it. For the moment
 // one character is taken away and the next put in its place.
 void SetBlank(bool blank);
+
+// SWBF2. How long World at War takes over a frame, as it last said, in
+// microseconds; 0 if it is not drawing (or has not said for a second).
+uint32_t ReaderFrameUs();
 
 // WaW. Draw() is called just before the end of each scene; it does nothing
 // unless SetDraw(true), or if no picture has arrived for half a second.
