@@ -324,6 +324,9 @@ cut = 0
 ; for both games, WaW's frame rate (common/pace.h).
 ; -1 = as many as WaW draws, and a tenth more (60 while WaW is not drawing).
 ; 0 = no cap. A number = at most that many.
+; The launcher writes this line each time it starts the game: the number of
+; its own frame rate limit if the player has set one, the same as it gives
+; WaW, so the two games draw at one rate; -1 if not.
 max_fps = -1
 ; Two things of this game's own that the whole picture (cut = 0) leaves out.
 ;

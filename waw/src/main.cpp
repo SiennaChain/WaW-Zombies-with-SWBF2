@@ -1535,10 +1535,12 @@ void Borderless() {
 }
 
 // [overlay] max_fps: the most frames a second this game draws (common/pace.h).
-// -1 is the screen's refresh rate, asked for again each time: the game changes
-// the screen's mode as it starts.
+// None unless one is set: it is the player's to choose, in the launcher, which
+// writes it there (tools/launcher/main.cpp, TellFrameLimit). -1 is the
+// screen's refresh rate, asked for again each time: the game changes the
+// screen's mode as it starts.
 void FrameCap(const Config& config) {
-  int fps = config.GetInt("overlay", "max_fps", -1);
+  int fps = config.GetInt("overlay", "max_fps", 0);
   if (fps < 0) {
     DEVMODEW mode{};
     mode.dmSize = sizeof(mode);

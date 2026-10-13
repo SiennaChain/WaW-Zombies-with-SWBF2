@@ -91,8 +91,8 @@ const UINT kBegin = WM_APP + 5;   // wParam: the map to start without being aske
 const UINT kStopped = WM_APP + 6; // the start was called off (Settings was pressed): the buttons come back
 const int kFirstButton = 100;
 const int kSettingsButton = 200;
-// The settings window's own: a box to tick, five lists, and two buttons.
-const int kDisplayList = 300, kModeList = 301, kRefreshList = 302, kSmoothList = 303, kSyncList = 304, kDetailList = 305, kSave = 306, kLeave = 307;
+// The settings window's own: seven lists and two buttons.
+const int kDisplayList = 300, kModeList = 301, kRefreshList = 302, kSmoothList = 303, kSyncList = 304, kDetailList = 305, kSave = 306, kLeave = 307, kLimitList = 308;
 const UINT_PTR kPadTimer = 1;
 
 struct Settings {
@@ -103,6 +103,7 @@ struct Settings {
   int refresh = 0;          // how often a second the screen is redrawn, fullscreen; 0: as World at War has it
   int smoothing = 0;        // anti-aliasing: 1 none, 2 or 4 samples; 0: as World at War has it
   int sync = -1;            // wait for the screen before each frame: 0 no, 1 yes; -1: as World at War has it
+  int maxFps = 0;           // the most frames a second, both games: 0 no limit, -1 as many as the screen shows
   bool wawVideo = true;     // tell World at War fullscreen, width and height
   int bfHeight = 1080;      // the most lines Battlefront II's picture is drawn with
   std::wstring bfArgs;      // more for Battlefront II's command line
@@ -194,6 +195,7 @@ void LoadSettings() {
   s.refresh = config.GetInt("launcher", "refresh", 0);
   s.smoothing = config.GetInt("launcher", "antialiasing", 0);
   s.sync = config.GetInt("launcher", "sync_every_frame", -1);
+  s.maxFps = std::max(-1, config.GetInt("launcher", "max_fps", 0));
   s.wawVideo = config.GetInt("launcher", "waw_video", 1) != 0;
   s.bfHeight = std::max(240, config.GetInt("launcher", "swbf2_height", 1080));
   s.bfArgs = Wide(config.GetString("launcher", "swbf2_args", ""));
@@ -352,6 +354,38 @@ int Uninstall(const std::wstring& to, const std::vector<std::wstring>& also) {
   }
   DeleteFileW((to + L"\\" + kManifest).c_str());
   return gone;
+}
+
+// The frame rate limit ([launcher] max_fps) is the two bridges' to keep: World
+// at War's own com_maxfps does not hold it in a map started this way, and
+// nothing holds a Battlefront II that has no window. Each bridge reads its
+// limit from its own wawbf.ini ([overlay] max_fps, common/pace.h), so that is
+// where it is written, in the games' folders, after the files from here have
+// gone in (which puts the line back as it came, and is why this is done every
+// time). Both are given the same number, so the two games draw at one rate.
+// With no limit World at War has none, and Battlefront II is left to keep up
+// with it: as fast as World at War draws and a tenth, which is that bridge's
+// own -1. `bfDir` empty: Battlefront II was running already, and is left be.
+void TellFrameLimit(const Settings& s, const std::wstring& wawDir, const std::wstring& bfDir) {
+  int both = s.maxFps;
+  if (both < 0) {
+    // As many as the screen shows. World at War's bridge can be told so (its
+    // own -1); Battlefront II's needs the number. With the screen to itself
+    // World at War sets the rate it was told to, if it was told one.
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    both = s.fullscreen && !s.borderless && s.refresh > 0 ? s.refresh
+           : EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1 ? static_cast<int>(mode.dmDisplayFrequency)
+           : 60;
+  }
+  const std::wstring waw = std::to_wstring(s.maxFps < 0 ? -1 : s.maxFps), bf = std::to_wstring(both > 0 ? both : -1);
+  WritePrivateProfileStringW(L"overlay", L"max_fps", waw.c_str(), (wawDir + L"\\wawbf.ini").c_str());
+  if (!bfDir.empty()) WritePrivateProfileStringW(L"overlay", L"max_fps", bf.c_str(), (bfDir + L"\\wawbf.ini").c_str());
+  if (s.maxFps == 0) {
+    log::Info("frame rate limit: none (World at War as fast as it can, Battlefront II as fast as World at War)");
+  } else {
+    log::Info("frame rate limit: %d a second, both games%s", both, s.maxFps < 0 ? " (the screen's)" : "");
+  }
 }
 
 // --- one game of it ----------------------------------------------------------
@@ -533,6 +567,7 @@ void Play(int which) {
     if (wrong.empty()) wrong = Install(files + L"\\mods", WawData() + L"\\mods");
     if (!wrong.empty()) return Say(kFailed, wrong);
   }
+  TellFrameLimit(s, wawDir, bfWasRunning ? L"" : bfDir);
   if (!Exists(WawData() + L"\\mods\\" + ModOf(map) + L"\\mod.ff")) return Say(kFailed, std::wstring(L"The mod's files for ") + map.title + L" are not installed.");
   if (!Exists(wawDir + L"\\d3d9.dll") || !Exists(bfDir + L"\\d3d9.dll")) {
     return Say(kFailed, L"The mod's d3d9.dll is missing from one of the games. Unpack the whole download again and run the launcher from there.");
@@ -762,10 +797,12 @@ void SaveSettings(HWND window) {
   Keep(L"refresh", Picked(window, kRefreshList));
   Keep(L"antialiasing", Picked(window, kSmoothList));
   Keep(L"sync_every_frame", Picked(window, kSyncList));
+  Keep(L"max_fps", Picked(window, kLimitList));
   Keep(L"swbf2_height", Picked(window, kDetailList));
   LoadSettings();
-  log::Info("settings saved: fullscreen %d, %d x %d, refresh %d, anti-aliasing %d, sync %d, Battlefront II %d lines", !g_settings.fullscreen ? 0 : g_settings.borderless ? 2 : 1,
-            g_settings.width, g_settings.height, g_settings.refresh, g_settings.smoothing, g_settings.sync, g_settings.bfHeight);
+  log::Info("settings saved: fullscreen %d, %d x %d, refresh %d, anti-aliasing %d, sync %d, frame rate limit %d, Battlefront II %d lines",
+            !g_settings.fullscreen ? 0 : g_settings.borderless ? 2 : 1, g_settings.width, g_settings.height, g_settings.refresh, g_settings.smoothing,
+            g_settings.sync, g_settings.maxFps, g_settings.bfHeight);
 }
 
 LRESULT CALLBACK SettingsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -806,7 +843,7 @@ void OpenSettings() {
   if (g_settingsWindow) return;
   ListModes();
   const Settings& s = g_settings;
-  const int width = 460, height = 24 + 6 * 40 + 96 + 56;
+  const int width = 460, height = 24 + 7 * 40 + 164 + 56;
   RECT frame = {0, 0, Px(width), Px(height)}, owner{};
   const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
   AdjustWindowRect(&frame, style, FALSE);
@@ -848,7 +885,19 @@ void OpenSettings() {
   Offer(list, L"No", 0, s.sync);
   Offer(list, L"Yes", 1, s.sync);
 
-  list = List(w, L"Your character's picture", kDetailList, 5);
+  // One limit for both games (common/pace.h). None unless the player sets one.
+  list = List(w, L"Frame rate limit", kLimitList, 5);
+  Offer(list, L"No limit", 0, s.maxFps);
+  Offer(list, L"Same as the screen", -1, s.maxFps);
+  const int limits[] = {30, 60, 90, 120, 144, 165, 240};
+  bool limited = s.maxFps <= 0;
+  for (const int limit : limits) {
+    Offer(list, std::to_wstring(limit) + L" a second", limit, s.maxFps);
+    limited = limited || limit == s.maxFps;
+  }
+  if (!limited) Offer(list, std::to_wstring(s.maxFps) + L" a second", s.maxFps, s.maxFps);
+
+  list = List(w, L"Your character's picture", kDetailList, 6);
   const int lines[] = {1080, 900, 720, 540};
   const wchar_t* const called[] = {L"Sharpest (1080 lines)", L"Sharp (900 lines)", L"Fast (720 lines)", L"Fastest (540 lines)"};
   bool listed = false;
@@ -860,8 +909,9 @@ void OpenSettings() {
 
   Made(w, L"STATIC",
        L"These are the settings World at War only lets you change at its main menu, which this skips. Everything else (brightness, shadows, "
-       L"textures, sound, controls) is in its own Options while you play: Esc.",
-       SS_LEFT, 0, 24, 24 + 6 * 40, width - 48, 90);
+       L"textures, sound, controls) is in its own Options while you play: Esc.\n\n"
+       L"The frame rate limit holds both games to the same rate. If your character moves less smoothly than the game, set one.",
+       SS_LEFT, 0, 24, 24 + 7 * 40, width - 48, 158);
   SetFocus(Made(w, L"BUTTON", g_atOnce >= 0 ? L"Save and play" : L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, kSave, width - 24 - 110 - 12 - 150, height - 48, 150, 32));
   Made(w, L"BUTTON", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP, kLeave, width - 24 - 110, height - 48, 110, 32);
 

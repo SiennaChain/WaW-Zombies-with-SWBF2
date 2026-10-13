@@ -326,12 +326,23 @@ frames a second, 12 in an earlier game, with `readback` 10 to 40 ms. So it was
 not Battlefront II drawing too much, it was World at War, and the character
 moved at Battlefront II's rate.
 
-- **A frame cap for World at War.** `[overlay] max_fps` in its `wawbf.ini`,
-  as shipped the screen's refresh rate. With it World at War holds 60 and
-  Battlefront II gets 30 to 50 in the map (60 at its pause menu). Still short:
-  `readback` is 7 to 24 ms there. What is left to try is fewer pixels for World
-  at War on such a PC (the launcher starts it at the screen's own size), and
-  asking Windows for a higher graphics priority for Battlefront II.
+- **A frame rate limit, the player's to set.** "Frame rate limit" in the
+  launcher's Settings (`max_fps` in `wawbf_launcher.ini`): no limit as shipped,
+  as many as the screen shows, or a number. It is one limit for both games:
+  each time it starts them the launcher writes the same number into both
+  bridges' `[overlay] max_fps` (`TellFrameLimit` in `tools/launcher/main.cpp`),
+  and with no limit leaves Battlefront II at World at War's rate and a tenth.
+  With World at War held to 60 at 2880x1800 it holds 60 and Battlefront II
+  gets 30 to 50 in the map (60 at its pause menu). Still short: `readback` is
+  7 to 24 ms there.
+- **Windows would not load a rebuilt bridge.** That PC has Smart App Control
+  on. It let the bridges built there earlier in the day load, and then
+  refused one built a few hours later: Battlefront II ended three seconds
+  after starting with exit code 0xC0E90002, and Code Integrity's log has
+  event 3077 naming `d3d9.dll`. The launcher only says "Battlefront II did not
+  start, or started without the mod". Nothing unsigned can be counted on to
+  load on such a PC, and there is no allowing one file: the bridges would
+  have to be signed, or the player turn Smart App Control off.
 - **The controller did nothing.** World at War binds a controller's buttons
   from its main menu, which the launcher skips; this player's settings had no
   `BUTTON_` bound. The launcher now adds `+exec default_controller.cfg` (the
@@ -342,8 +353,8 @@ moved at Battlefront II's rate.
   a window whose border its bridge takes off and which it lays over the screen
   (`Borderless` in `waw/src/main.cpp`). A smaller width and height are stretched
   to fill it.
-- **Fewer pixels, and graphics priority.** At 1920x1200 in that window, with
-  Battlefront II asking Windows for high graphics priority
+- **Fewer pixels, and graphics priority.** At 1920x1200 in that window, the
+  limit at 60, with Battlefront II asking Windows for high graphics priority
   (`pace::RaiseGraphicsPriority`), Battlefront II drew 56 to 66 frames a second
   in the map, `readback` 5 ms. The two were tried together; which did how much
   is not known.

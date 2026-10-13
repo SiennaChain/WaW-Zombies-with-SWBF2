@@ -68,9 +68,9 @@ function Settings([string]$path) {
 }
 # What a release must not be installed with, and what it must.
 $must = @{
-    'waw\wawbf.ini.example'   = @{ 'bridge.without_launcher' = '0'; 'bridge.any_exe' = '0'; 'debug.god_at_start' = '0'; 'debug.console_line' = ''; 'waw.quit_at_menu' = '1'; 'overlay.draw' = '1'; 'window.dpi_aware' = '1' }
+    'waw\wawbf.ini.example'   = @{ 'bridge.without_launcher' = '0'; 'bridge.any_exe' = '0'; 'debug.god_at_start' = '0'; 'debug.console_line' = ''; 'waw.quit_at_menu' = '1'; 'overlay.draw' = '1'; 'overlay.max_fps' = '0'; 'window.dpi_aware' = '1' }
     'swbf2\wawbf.ini.example' = @{ 'bridge.without_launcher' = '0'; 'bridge.any_exe' = '0'; 'swbf2.hidden' = '1'; 'swbf2.keep_running' = '1'; 'swbf2.pointer_in_background' = '0'; 'swbf2.devices_in_background' = '0'; 'swbf2.follow' = '1'; 'overlay.publish' = '1'; 'overlay.max_fps' = '-1'; 'debug.force_buttons' = '0'; 'debug.force_functions' = '0'; 'debug.frame_probe' = '0' }
-    'tools\launcher\wawbf_launcher.ini.example' = @{ 'launcher.cheats' = '0'; 'launcher.waw_args' = ''; 'launcher.swbf2_args' = ''; 'launcher.fullscreen' = '2'; 'launcher.width' = '0'; 'launcher.height' = '0'; 'launcher.waw_video' = '1' }
+    'tools\launcher\wawbf_launcher.ini.example' = @{ 'launcher.cheats' = '0'; 'launcher.waw_args' = ''; 'launcher.swbf2_args' = ''; 'launcher.fullscreen' = '2'; 'launcher.width' = '0'; 'launcher.height' = '0'; 'launcher.waw_video' = '1'; 'launcher.max_fps' = '0' }
 }
 foreach ($file in $must.Keys) {
     $have = Settings (Join-Path $repo $file)

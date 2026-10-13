@@ -80,6 +80,8 @@ Run "Settings.cmd", or press Settings in the launcher while it is loading
     Refresh rate
     Anti-aliasing
     Sync every frame
+    Frame rate limit           one limit for both games; none to begin with.
+                               Set one if your character moves in jerks
     Your character's picture   lower it if the game runs slowly
 
 Everything else is where it always was, in World at War's own Options while

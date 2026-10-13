@@ -278,14 +278,17 @@ quit_at_menu = 1
 ; and shots, and what is kept of its HUD. Needs [overlay] publish = 1 on the
 ; SWBF2 side. Can be switched live.
 draw = 1
-; The most frames a second this game draws. Its own com_maxfps does not hold
-; it here, and every frame it draws beyond what the screen shows is graphics
-; time taken from SWBF2, whose picture is your character: on a PC with one
-; graphics chip for both games, how smoothly the character moves
-; (common/pace.h).
-; -1 = as many as the screen shows. 0 = no cap. A number = at most that many.
-; Can be changed live.
-max_fps = -1
+; The frame rate limit: the most frames a second this game draws. The
+; launcher writes this line each time it starts the game, from its own
+; setting ("Frame rate limit": wawbf_launcher.ini, max_fps), and gives SWBF2
+; the same, so change it there; a change here lasts until the next start.
+; Its own com_maxfps does not hold the game here, and every frame it draws
+; beyond what the screen shows is graphics time taken from SWBF2, whose
+; picture is your character: on a PC with one graphics chip for both games,
+; how smoothly the character moves (common/pace.h).
+; 0 = no limit. -1 = as many as the screen shows. A number = at most that
+; many. Can be changed live.
+max_fps = 0
 
 [proxy]
 ; Optional: load another d3d9.dll (e.g. ReShade) instead of the system one.

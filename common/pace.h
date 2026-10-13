@@ -20,9 +20,14 @@
 // graphics chip, it drew 182 frames a second for a screen that shows 60, and
 // Battlefront II, the window not in front, was left 18 to 43 (12 at worst),
 // with 10 to 40 ms of each frame spent waiting for the chip to hand its
-// picture back. The character is only as smooth as Battlefront II draws. So
-// World at War's bridge holds it to the screen's refresh rate ([overlay]
-// max_fps in its wawbf.ini), and what it no longer draws is Battlefront II's.
+// picture back. The character is only as smooth as Battlefront II draws, so
+// on such a PC a limit on World at War is what gives Battlefront II its
+// frames.
+//
+// It is the player's to set, and there is none until they do: the launcher's
+// "frame rate limit", which it writes into both games' wawbf.ini as the same
+// number ([overlay] max_fps; tools/launcher/main.cpp, TellFrameLimit), so the
+// two draw at one rate.
 #pragma once
 
 namespace wawbf::pace {

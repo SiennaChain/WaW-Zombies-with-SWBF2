@@ -35,6 +35,14 @@ antialiasing = 0
 ; more frames a second than the screen shows), 0 = it does not. -1 = as World
 ; at War has it.
 sync_every_frame = -1
+; The frame rate limit: the most frames a second, for both games alike, so
+; they draw at one rate. 0 = no limit: World at War draws as fast as it can
+; (its own com_maxfps does not hold it here) and Battlefront II keeps up as
+; best it can. -1 = as many as the screen shows. A number = that many.
+; On a PC with one graphics chip for both games, with no limit World at War
+; can take so much of it that the character, which is Battlefront II's
+; picture, moves in jerks: set one there.
+max_fps = 0
 ; 0 = start World at War with whatever its own video options say, and ignore
 ; fullscreen, width and height above. Set width and height to what those
 ; options say all the same: Battlefront II's picture is made the same shape.
